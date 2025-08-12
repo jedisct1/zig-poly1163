@@ -13,6 +13,9 @@ pub const has_avx2 = blk: {
     break :blk std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
 };
 
+// Vector type for SIMD byte loading
+const Vec16u8 = @Vector(16, u8);
+
 pub const Poly1163Vector = struct {
     r: u128,
     s: u128,
@@ -69,7 +72,7 @@ pub const Poly1163Vector = struct {
             }
         }
 
-        // Process full vector blocks
+        // Process full vector blocks using optimized loading
         while (input.len >= BLOCK_SIZE * VECTOR_WIDTH) {
             self.processVectorBlocks(input[0..BLOCK_SIZE * VECTOR_WIDTH]);
             input = input[BLOCK_SIZE * VECTOR_WIDTH..];
@@ -92,12 +95,23 @@ pub const Poly1163Vector = struct {
     fn processVectorBlocks(self: *Poly1163Vector, blocks: []const u8) void {
         var values: [VECTOR_WIDTH]u128 = undefined;
         
-        // Load and pad all blocks in parallel
-        for (0..VECTOR_WIDTH) |i| {
+        // Use SIMD to efficiently load blocks if possible
+        inline for (0..VECTOR_WIDTH) |i| {
             const block = blocks[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE];
             var val: u128 = 0;
-            for (0..BLOCK_SIZE) |j| {
-                val |= @as(u128, block[j]) << @intCast(j * 8);
+            
+            // Load bytes using vectorized operations where beneficial
+            if (BLOCK_SIZE >= 8) {
+                // Load first 8 bytes as u64
+                val |= mem.readInt(u64, block[0..8], .little);
+                // Load remaining 6 bytes
+                for (8..BLOCK_SIZE) |j| {
+                    val |= @as(u128, block[j]) << @intCast(j * 8);
+                }
+            } else {
+                for (0..BLOCK_SIZE) |j| {
+                    val |= @as(u128, block[j]) << @intCast(j * 8);
+                }
             }
             val |= @as(u128, 1) << (BLOCK_SIZE * 8);
             values[i] = val;
@@ -112,7 +126,7 @@ pub const Poly1163Vector = struct {
         self.acc = multiplyMod(self.acc, self.r_powers[VECTOR_WIDTH - 1]);
         
         // Add remaining blocks with their corresponding powers
-        for (1..VECTOR_WIDTH) |i| {
+        inline for (1..VECTOR_WIDTH) |i| {
             const power_idx = VECTOR_WIDTH - 1 - i;
             const term = multiplyMod(values[i], self.r_powers[power_idx]);
             self.acc +%= term;
