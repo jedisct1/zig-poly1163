@@ -103,11 +103,10 @@ pub const Poly1163 = struct {
         self.acc = multiplyMod(self.acc, self.r_powers[0]);
         
         // Zero out first value for SIMD multiplication since it's already handled
-        var values_to_multiply = values;
-        values_to_multiply[0] = 0;
+        values[0] = 0;
         
         // Use SIMD for parallel multiplication of remaining values
-        const products = multiplyModVector(values_to_multiply, self.r_powers);
+        const products = multiplyModVector(values, self.r_powers);
         
         // Sum products using SIMD reduction
         self.acc +%= @reduce(.Add, products);
@@ -161,37 +160,93 @@ pub const Poly1163 = struct {
         return tag;
     }
 
-    // Vectorized modular multiplication for multiple independent multiplications
-    fn multiplyModVector(a: @Vector(VECTOR_WIDTH, u128), b: @Vector(VECTOR_WIDTH, u128)) @Vector(VECTOR_WIDTH, u128) {
+    // Lazy vectorized multiplication - delays full reduction
+    fn multiplyModVectorLazy(a: @Vector(VECTOR_WIDTH, u128), b: @Vector(VECTOR_WIDTH, u128)) @Vector(VECTOR_WIDTH, u128) {
         const mask58: @Vector(VECTOR_WIDTH, u128) = @splat((@as(u128, 1) << 58) - 1);
         const three: @Vector(VECTOR_WIDTH, u128) = @splat(3);
-        
+
         // Split operands into 58-bit limbs using SIMD operations
         const a0 = a & mask58;
         const a1 = a >> @splat(58);
         const b0 = b & mask58;
         const b1 = b >> @splat(58);
-        
+
+        // Multiplication without full reduction
+        const d0 = a0 * b0 + a1 * b1 * three;
+        const d1 = a0 * b1 + a1 * b0;
+
+        // Single carry pass (not full reduction)
+        const c0 = d0 >> @splat(58);
+        const res0_tmp = d0 & mask58;
+        const d1_carry = d1 + c0;
+
+        const c1 = d1_carry >> @splat(58);
+        const res1 = d1_carry & mask58;
+
+        // Partial reduction only
+        const res0 = res0_tmp + c1 * three;
+
+        return res0 + (res1 << @splat(58));
+    }
+
+    // Vectorized modular multiplication for multiple independent multiplications
+    fn multiplyModVector(a: @Vector(VECTOR_WIDTH, u128), b: @Vector(VECTOR_WIDTH, u128)) @Vector(VECTOR_WIDTH, u128) {
+        const mask58: @Vector(VECTOR_WIDTH, u128) = @splat((@as(u128, 1) << 58) - 1);
+        const three: @Vector(VECTOR_WIDTH, u128) = @splat(3);
+
+        // Split operands into 58-bit limbs using SIMD operations
+        const a0 = a & mask58;
+        const a1 = a >> @splat(58);
+        const b0 = b & mask58;
+        const b1 = b >> @splat(58);
+
         // Karatsuba-like multiplication with vectorized operations
         var d0 = a0 * b0;
         d0 += a1 * (b1 * three); // b1 * 3 because 2^116 ≡ 3 (mod p)
-        
+
         var d1 = a0 * b1;
         d1 += a1 * b0;
-        
+
         const c0 = d0 >> @splat(58);
         const res0_tmp = d0 & mask58;
         d1 += c0;
-        
+
         const c1 = d1 >> @splat(58);
         const res1 = d1 & mask58;
-        
+
         const c2 = c1 * three;
         var res0 = res0_tmp + c2;
         const c3 = res0 >> @splat(58);
         res0 = res0 & mask58;
-        
+
         return res0 + ((res1 + c3) << @splat(58));
+    }
+
+    // Lazy scalar multiplication - delays full reduction
+    fn multiplyModLazy(a: u128, b: u128) u128 {
+        const mask58 = (@as(u128, 1) << 58) - 1;
+
+        const a0 = a & mask58;
+        const a1 = a >> 58;
+        const b0 = b & mask58;
+        const b1 = b >> 58;
+
+        // Multiplication without full reduction
+        const d0 = a0 * b0 + a1 * b1 * 3;
+        const d1 = a0 * b1 + a1 * b0;
+
+        // Single carry pass (not full reduction)
+        const c0 = d0 >> 58;
+        const res0_tmp = d0 & mask58;
+        const d1_carry = d1 + c0;
+
+        const c1 = d1_carry >> 58;
+        const res1 = d1_carry & mask58;
+
+        // Partial reduction only
+        const res0 = res0_tmp + c1 * 3;
+
+        return res0 + (res1 << 58);
     }
 
     // Modular multiplication using 2^116 - 3 prime with 58-bit limbs
