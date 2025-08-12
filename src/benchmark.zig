@@ -1,7 +1,6 @@
 const std = @import("std");
 const Poly1163 = @import("root.zig").Poly1163;
 const Poly1305 = std.crypto.onetimeauth.Poly1305;
-const Timer = std.time.Timer;
 
 const KB = 1024;
 const MB = 1024 * KB;
@@ -50,21 +49,9 @@ pub fn main() !void {
     };
 
     try stdout.print("{s:<12} | {s:>14} | {s:>14} | {s:>12} | {s:>12} | {s:>8}\n", .{
-        "Size",
-        "Poly1163 (ns)",
-        "Poly1305 (ns)",
-        "1163 MB/s",
-        "1305 MB/s",
-        "Speedup",
+        "Size", "Poly1163 (ns)", "Poly1305 (ns)", "1163 MB/s", "1305 MB/s", "Speedup",
     });
-    try stdout.print("{s:-<12}-+-{s:->14}-+-{s:->14}-+-{s:->12}-+-{s:->12}-+-{s:->8}\n", .{
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-    });
+    try stdout.print("{s:-<12}-+-{s:->14}-+-{s:->14}-+-{s:->12}-+-{s:->12}-+-{s:->8}\n", .{ "", "", "", "", "", "" });
 
     for (configs) |config| {
         const data = try allocator.alloc(u8, config.data_size);
@@ -80,22 +67,17 @@ pub fn main() !void {
         const speedup = @as(f64, @floatFromInt(poly1305_ns)) / @as(f64, @floatFromInt(poly1163_ns));
 
         try stdout.print("{s:<12} | {d:>14.1} | {d:>14.1} | {d:>12.1} | {d:>12.1} | {d:>7.2}x\n", .{
-            config.name,
-            @as(f64, @floatFromInt(poly1163_ns)),
-            @as(f64, @floatFromInt(poly1305_ns)),
-            poly1163_mbps,
-            poly1305_mbps,
-            speedup,
+            config.name,   @as(f64, @floatFromInt(poly1163_ns)), @as(f64, @floatFromInt(poly1305_ns)),
+            poly1163_mbps, poly1305_mbps,                        speedup,
         });
     }
 
-    try stdout.print("\n", .{});
-    try stdout.print("Note: Poly1163 uses optimized 2^116-3 polynomial with SIMD processing\n", .{});
+    try stdout.print("\nNote: Poly1163 uses optimized 2^116-3 polynomial with SIMD processing\n", .{});
     try stdout.print("Speedup > 1 means Poly1163 is faster than Poly1305\n", .{});
 }
 
 fn benchmarkPoly1163(key: [32]u8, data: []const u8, iterations: u32) !u64 {
-    var timer = try Timer.start();
+    var timer = try std.time.Timer.start();
 
     var i: u32 = 0;
     while (i < iterations) : (i += 1) {
@@ -110,7 +92,7 @@ fn benchmarkPoly1163(key: [32]u8, data: []const u8, iterations: u32) !u64 {
 }
 
 fn benchmarkPoly1305(key: [32]u8, data: []const u8, iterations: u32) !u64 {
-    var timer = try Timer.start();
+    var timer = try std.time.Timer.start();
 
     var i: u32 = 0;
     while (i < iterations) : (i += 1) {
