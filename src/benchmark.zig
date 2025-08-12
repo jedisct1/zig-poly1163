@@ -50,42 +50,36 @@ pub fn main() !void {
         break :blk key;
     };
 
-    try stdout.print("{s:<12} | {s:>14} | {s:>14} | {s:>14} | {s:>12} | {s:>12} | {s:>12} | {s:>10}\n", .{
-        "Size", "1163 Scalar", "1163 Vector", "Poly1305", "Scalar MB/s", "Vector MB/s", "1305 MB/s", "Vec Speedup",
+    try stdout.print("{s:<12} | {s:>12} | {s:>12} | {s:>12} | {s:>10} | {s:>10}\n", .{
+        "Size", "Scalar", "Vector", "Poly1305", "Vec Speed", "vs 1305",
     });
-    try stdout.print("{s:-<12}-+-{s:->14}-+-{s:->14}-+-{s:->14}-+-{s:->12}-+-{s:->12}-+-{s:->12}-+-{s:->10}\n", .{ 
-        "", "", "", "", "", "", "", "" 
-    });
+    try stdout.print("{s:-<12}-+-{s:->12}-+-{s:->12}-+-{s:->12}-+-{s:->10}-+-{s:->10}\n", .{ "", "", "", "", "", "" });
 
     for (configs) |config| {
         const data = try allocator.alloc(u8, config.data_size);
         defer allocator.free(data);
         random.bytes(data);
 
-        const poly1163_scalar_ns = try benchmarkPoly1163Scalar(key_1163, data, config.iterations);
-        const poly1163_vector_ns = try benchmarkPoly1163Vector(key_1163, data, config.iterations);
+        const scalar_ns = try benchmarkPoly1163Scalar(key_1163, data, config.iterations);
+        const vector_ns = try benchmarkPoly1163Vector(key_1163, data, config.iterations);
         const poly1305_ns = try benchmarkPoly1305(key_1305, data, config.iterations);
 
-        const poly1163_scalar_mbps = calculateThroughput(config.data_size, poly1163_scalar_ns);
-        const poly1163_vector_mbps = calculateThroughput(config.data_size, poly1163_vector_ns);
-        const poly1305_mbps = calculateThroughput(config.data_size, poly1305_ns);
+        const vec_speedup = @as(f64, @floatFromInt(scalar_ns)) / @as(f64, @floatFromInt(vector_ns));
+        const vs_1305 = @as(f64, @floatFromInt(poly1305_ns)) / @as(f64, @floatFromInt(vector_ns));
 
-        const vector_speedup = @as(f64, @floatFromInt(poly1163_scalar_ns)) / @as(f64, @floatFromInt(poly1163_vector_ns));
-
-        try stdout.print("{s:<12} | {d:>14.1} | {d:>14.1} | {d:>14.1} | {d:>12.1} | {d:>12.1} | {d:>12.1} | {d:>9.2}x\n", .{
-            config.name,   
-            @as(f64, @floatFromInt(poly1163_scalar_ns)), 
-            @as(f64, @floatFromInt(poly1163_vector_ns)),
+        try stdout.print("{s:<12} | {d:>12.1} | {d:>12.1} | {d:>12.1} | {d:>9.2}x | {d:>9.2}x\n", .{
+            config.name,
+            @as(f64, @floatFromInt(scalar_ns)),
+            @as(f64, @floatFromInt(vector_ns)),
             @as(f64, @floatFromInt(poly1305_ns)),
-            poly1163_scalar_mbps, 
-            poly1163_vector_mbps,
-            poly1305_mbps,
-            vector_speedup,
+            vec_speedup,
+            vs_1305,
         });
     }
 
-    try stdout.print("\nNote: Poly1163 Vector uses Horner's method to process 4 blocks in parallel\n", .{});
-    try stdout.print("Vec Speedup: Performance improvement of vector over scalar implementation\n", .{});
+    try stdout.print("\nOptimizations in Vector version:\n", .{});
+    try stdout.print("- Horner's method for 4 blocks in parallel\n", .{});
+    try stdout.print("- @Vector types for SIMD operations\n", .{});
 }
 
 fn benchmarkPoly1163Scalar(key: [32]u8, data: []const u8, iterations: u32) !u64 {
