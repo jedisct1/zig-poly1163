@@ -159,6 +159,40 @@ pub fn build(b: *std.Build) void {
     benchmark_step.dependOn(&benchmark_cmd.step);
     benchmark_cmd.step.dependOn(b.getInstallStep());
 
+    // Add test compatibility executable
+    const test_compat = b.addExecutable(.{
+        .name = "test_compat",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/test_compat.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    b.installArtifact(test_compat);
+
+    const test_compat_step = b.step("test-compat", "Run compatibility test");
+    const test_compat_cmd = b.addRunArtifact(test_compat);
+    test_compat_step.dependOn(&test_compat_cmd.step);
+    test_compat_cmd.step.dependOn(b.getInstallStep());
+
+    // Add test vectors executable
+    const test_vectors = b.addExecutable(.{
+        .name = "test_vectors",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/test_vectors.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    b.installArtifact(test_vectors);
+
+    const test_vectors_step = b.step("test-vectors", "Run test vectors");
+    const test_vectors_cmd = b.addRunArtifact(test_vectors);
+    test_vectors_step.dependOn(&test_vectors_cmd.step);
+    test_vectors_cmd.step.dependOn(b.getInstallStep());
+
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
     // The Zig build system is entirely implemented in userland, which means
