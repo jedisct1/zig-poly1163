@@ -22,24 +22,19 @@ pub const Poly1163Vector = struct {
     acc: u128,
     buf: [BLOCK_SIZE * VECTOR_WIDTH]u8,
     buf_len: usize,
-    // Precomputed powers of r for Horner's method
-    r_powers: [VECTOR_WIDTH]u128,
-    // Vector version of r_powers for SIMD
+    // Precomputed powers of r for Horner's method (vectorized)
     r_powers_vec: Vec128,
 
     pub fn init(key_bytes: [KEY_SIZE]u8) Poly1163Vector {
         const r = mem.readInt(u128, key_bytes[0..16], .little) & (((@as(u128, 1) << 112) - 1));
         const s = mem.readInt(u128, key_bytes[16..32], .little);
 
-        // Precompute powers of r: r, r^2, r^3, r^4
-        var r_powers: [VECTOR_WIDTH]u128 = undefined;
-        r_powers[0] = r;
+        // Precompute powers of r: r, r^2, r^3, r^4 directly as vector
+        var r_powers_vec: Vec128 = undefined;
+        r_powers_vec[0] = r;
         for (1..VECTOR_WIDTH) |i| {
-            r_powers[i] = multiplyMod(r_powers[i - 1], r);
+            r_powers_vec[i] = multiplyMod(r_powers_vec[i - 1], r);
         }
-
-        // Create vector version
-        const r_powers_vec: Vec128 = r_powers;
 
         return Poly1163Vector{
             .r = r,
@@ -47,7 +42,6 @@ pub const Poly1163Vector = struct {
             .acc = 0,
             .buf = undefined,
             .buf_len = 0,
-            .r_powers = r_powers,
             .r_powers_vec = r_powers_vec,
         };
     }
@@ -99,9 +93,9 @@ pub const Poly1163Vector = struct {
     }
 
     fn processVectorBlocks(self: *Poly1163Vector, blocks: []const u8) void {
-        var values: [VECTOR_WIDTH]u128 = undefined;
+        var values_vec: Vec128 = undefined;
         
-        // Load all blocks
+        // Load all blocks directly into vector
         inline for (0..VECTOR_WIDTH) |i| {
             const block = blocks[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE];
             var val: u128 = 0;
@@ -120,36 +114,32 @@ pub const Poly1163Vector = struct {
                 }
             }
             val |= @as(u128, 1) << (BLOCK_SIZE * 8);
-            values[i] = val;
+            values_vec[i] = val;
         }
 
         // Use vectorized multiplication for parallel processing
         // We need to reorganize for Horner's method with SIMD
         // First, multiply first block with accumulator scalar
-        self.acc +%= values[0];
-        self.acc = multiplyMod(self.acc, self.r_powers[VECTOR_WIDTH - 1]);
+        self.acc +%= values_vec[0];
+        self.acc = multiplyMod(self.acc, self.r_powers_vec[VECTOR_WIDTH - 1]);
         
         // Process remaining blocks in parallel using SIMD
         // Create a vector with the appropriate powers for blocks 1-3
-        var powers_for_mult: [VECTOR_WIDTH]u128 = undefined;
-        powers_for_mult[0] = self.r_powers[2]; // for block 1: r^3
-        powers_for_mult[1] = self.r_powers[1]; // for block 2: r^2
-        powers_for_mult[2] = self.r_powers[0]; // for block 3: r^1
+        var powers_for_mult: Vec128 = undefined;
+        powers_for_mult[0] = self.r_powers_vec[2]; // for block 1: r^3
+        powers_for_mult[1] = self.r_powers_vec[1]; // for block 2: r^2
+        powers_for_mult[2] = self.r_powers_vec[0]; // for block 3: r^1
         powers_for_mult[3] = 0; // unused
         
-        const powers_vec: Vec128 = powers_for_mult;
-        
         // Shift values to align with powers
-        var shifted_values: [VECTOR_WIDTH]u128 = undefined;
-        shifted_values[0] = values[1];
-        shifted_values[1] = values[2];
-        shifted_values[2] = values[3];
+        var shifted_values: Vec128 = undefined;
+        shifted_values[0] = values_vec[1];
+        shifted_values[1] = values_vec[2];
+        shifted_values[2] = values_vec[3];
         shifted_values[3] = 0;
         
-        const shifted_vec: Vec128 = shifted_values;
-        
         // Perform vectorized multiplication
-        const products = multiplyModVec(shifted_vec, powers_vec);
+        const products = multiplyModVec(shifted_values, powers_for_mult);
         
         // Sum the results (reduction to scalar)
         for (0..3) |i| {
@@ -160,9 +150,9 @@ pub const Poly1163Vector = struct {
     fn processPartialVector(self: *Poly1163Vector, blocks: []const u8, num_blocks: usize) void {
         if (num_blocks == 0) return;
         
-        var values: [VECTOR_WIDTH]u128 = [_]u128{0} ** VECTOR_WIDTH;
+        var values_vec: Vec128 = @splat(0);
         
-        // Load available blocks
+        // Load available blocks into vector
         for (0..num_blocks) |i| {
             const block = blocks[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE];
             var val: u128 = 0;
@@ -170,16 +160,16 @@ pub const Poly1163Vector = struct {
                 val |= @as(u128, block[j]) << @intCast(j * 8);
             }
             val |= @as(u128, 1) << (BLOCK_SIZE * 8);
-            values[i] = val;
+            values_vec[i] = val;
         }
 
         // Process with Horner's method using only num_blocks powers
-        self.acc +%= values[0];
-        self.acc = multiplyMod(self.acc, self.r_powers[num_blocks - 1]);
+        self.acc +%= values_vec[0];
+        self.acc = multiplyMod(self.acc, self.r_powers_vec[num_blocks - 1]);
         
         for (1..num_blocks) |i| {
             const power_idx = num_blocks - 1 - i;
-            const term = multiplyMod(values[i], self.r_powers[power_idx]);
+            const term = multiplyMod(values_vec[i], self.r_powers_vec[power_idx]);
             self.acc +%= term;
         }
     }
