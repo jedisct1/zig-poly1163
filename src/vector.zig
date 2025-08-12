@@ -1,22 +1,21 @@
 const std = @import("std");
 const mem = std.mem;
 const crypto = std.crypto;
-const builtin = @import("builtin");
 
 const BLOCK_SIZE = 14;
 const TAG_SIZE = 16;
 const KEY_SIZE = 32;
-const VECTOR_WIDTH = 8;
+const VECTOR_WIDTH = std.simd.suggestVectorLength(u64) orelse 2;
 
-pub const Poly1163Vector = struct {
+pub const Poly1163 = struct {
     r: u128,
     s: u128,
     acc: u128,
     buf: [BLOCK_SIZE * VECTOR_WIDTH]u8,
     buf_len: usize,
-    r_powers: [VECTOR_WIDTH]u128, // Precomputed powers r^1, r^2, ..., r^8 for parallel processing
+    r_powers: [VECTOR_WIDTH]u128, // Precomputed powers r^1, r^2, ..., r^VECTOR_WIDTH for parallel processing
 
-    pub fn init(key_bytes: [KEY_SIZE]u8) Poly1163Vector {
+    pub fn init(key_bytes: [KEY_SIZE]u8) Poly1163 {
         const r = mem.readInt(u128, key_bytes[0..16], .little) & (((@as(u128, 1) << 112) - 1));
         const s = mem.readInt(u128, key_bytes[16..32], .little);
 
@@ -27,7 +26,7 @@ pub const Poly1163Vector = struct {
             r_powers[i] = multiplyMod(r_powers[i - 1], r);
         }
 
-        return Poly1163Vector{
+        return Poly1163{
             .r = r,
             .s = s,
             .acc = 0,
@@ -37,7 +36,7 @@ pub const Poly1163Vector = struct {
         };
     }
 
-    pub fn update(self: *Poly1163Vector, data: []const u8) void {
+    pub fn update(self: *Poly1163, data: []const u8) void {
         var input = data;
 
         if (self.buf_len > 0) {
@@ -56,21 +55,17 @@ pub const Poly1163Vector = struct {
                 }
                 const remaining = self.buf_len % BLOCK_SIZE;
                 if (remaining > 0) {
-                    std.mem.copyForwards(u8, self.buf[0..remaining], self.buf[complete_blocks * BLOCK_SIZE .. self.buf_len]);
+                    @memmove(self.buf[0..remaining], self.buf[complete_blocks * BLOCK_SIZE .. self.buf_len]);
                 }
                 self.buf_len = remaining;
             }
         }
 
         // Prefetch upcoming data for better cache utilization
-        if (builtin.cpu.arch == .x86_64 and input.len >= 256) {
-            @prefetch(input.ptr + 256, .{ .rw = .read, .locality = 3, .cache = .data });
-        }
+        @prefetch(input.ptr + 256, .{ .rw = .read, .locality = 3, .cache = .data });
 
         while (input.len >= BLOCK_SIZE * VECTOR_WIDTH) {
-            if (builtin.cpu.arch == .x86_64 and input.len >= BLOCK_SIZE * VECTOR_WIDTH + 256) {
-                @prefetch(input.ptr + BLOCK_SIZE * VECTOR_WIDTH + 256, .{ .rw = .read, .locality = 3, .cache = .data });
-            }
+            @prefetch(input.ptr + BLOCK_SIZE * VECTOR_WIDTH + 256, .{ .rw = .read, .locality = 3, .cache = .data });
             self.processVectorBlocks(input[0 .. BLOCK_SIZE * VECTOR_WIDTH]);
             input = input[BLOCK_SIZE * VECTOR_WIDTH ..];
         }
@@ -86,10 +81,10 @@ pub const Poly1163Vector = struct {
         }
     }
 
-    fn processVectorBlocks(self: *Poly1163Vector, blocks: []const u8) void {
+    fn processVectorBlocks(self: *Poly1163, blocks: []const u8) void {
         var values: [VECTOR_WIDTH]u128 = undefined;
 
-        // Load 8 blocks in parallel, using 64-bit reads for efficiency
+        // Load VECTOR_WIDTH blocks in parallel, using 64-bit reads for efficiency
         inline for (0..VECTOR_WIDTH) |i| {
             const block = blocks[i * BLOCK_SIZE .. (i + 1) * BLOCK_SIZE];
             const low = mem.readInt(u64, block[0..8], .little);
@@ -100,7 +95,7 @@ pub const Poly1163Vector = struct {
             values[i] = @as(u128, low) | (@as(u128, high) << 64) | (@as(u128, 1) << (BLOCK_SIZE * 8));
         }
 
-        // Horner's method: acc = ((acc + v0) * r^8 + v1 * r^7 + ... + v7 * r)
+        // Horner's method: acc = ((acc + v0) * r^VECTOR_WIDTH + v1 * r^(VECTOR_WIDTH-1) + ... + v(VECTOR_WIDTH-1) * r)
         self.acc +%= values[0];
         self.acc = multiplyMod(self.acc, self.r_powers[VECTOR_WIDTH - 1]);
 
@@ -110,10 +105,10 @@ pub const Poly1163Vector = struct {
         }
     }
 
-    fn processBlock(self: *Poly1163Vector, block: []const u8) void {
+    fn processBlock(self: *Poly1163, block: []const u8) void {
         const len = @min(block.len, BLOCK_SIZE);
         var val: u128 = 0;
-        
+
         if (len >= 8) {
             val = mem.readInt(u64, block[0..8], .little);
             for (8..len) |i| {
@@ -124,7 +119,7 @@ pub const Poly1163Vector = struct {
                 val |= @as(u128, block[i]) << @intCast(i * 8);
             }
         }
-        
+
         const shift_amount = @as(u7, @intCast(len)) * 8;
         val |= @as(u128, 1) << shift_amount; // Append 1-bit after message block
 
@@ -132,12 +127,12 @@ pub const Poly1163Vector = struct {
         self.acc = multiplyMod(self.acc, self.r);
     }
 
-    pub fn verify(self: *Poly1163Vector, expected_tag: [TAG_SIZE]u8) bool {
+    pub fn verify(self: *Poly1163, expected_tag: [TAG_SIZE]u8) bool {
         const computed_tag = self.final();
         return crypto.timing_safe.eql([TAG_SIZE]u8, computed_tag, expected_tag);
     }
 
-    pub fn final(self: *Poly1163Vector) [TAG_SIZE]u8 {
+    pub fn final(self: *Poly1163) [TAG_SIZE]u8 {
         if (self.buf_len > 0) {
             const complete_blocks = self.buf_len / BLOCK_SIZE;
             for (0..complete_blocks) |i| {
@@ -161,7 +156,7 @@ pub const Poly1163Vector = struct {
     // Modular multiplication using 2^116 - 3 prime with 58-bit limbs
     fn multiplyMod(a: u128, b: u128) u128 {
         const mask58 = (@as(u128, 1) << 58) - 1;
-        
+
         const a0 = a & mask58;
         const a1 = a >> 58;
         const b0 = b & mask58;
@@ -233,8 +228,8 @@ pub const Poly1163Vector = struct {
     }
 };
 
-pub fn authenticateVector(key: [KEY_SIZE]u8, message: []const u8) [TAG_SIZE]u8 {
-    var poly = Poly1163Vector.init(key);
+pub fn authenticate(key: [KEY_SIZE]u8, message: []const u8) [TAG_SIZE]u8 {
+    var poly = Poly1163.init(key);
     poly.update(message);
     return poly.final();
 }

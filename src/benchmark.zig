@@ -1,6 +1,5 @@
 const std = @import("std");
-const scalar = @import("scalar.zig");
-const vector = @import("vector.zig");
+const poly1163 = @import("root.zig");
 const Poly1305 = std.crypto.onetimeauth.Poly1305;
 
 const KB = 1024;
@@ -31,9 +30,9 @@ pub fn main() !void {
 
     const stdout = std.fs.File.stdout().deprecatedWriter();
 
-    try stdout.print("\n=== Poly1163 (Scalar vs Vector) vs Poly1305 Performance Comparison ===\n", .{});
+    try stdout.print("\n=== Poly1163 vs Poly1305 Performance Comparison ===\n", .{});
     try stdout.print("Build mode: ReleaseFast\n", .{});
-    try stdout.print("Vector width: 4 blocks (Horner's method)\n\n", .{});
+    try stdout.print("\n", .{});
 
     var prng = std.Random.DefaultPrng.init(0x12345678);
     const random = prng.random();
@@ -50,59 +49,40 @@ pub fn main() !void {
         break :blk key;
     };
 
-    try stdout.print("{s:<12} | {s:>12} | {s:>12} | {s:>12} | {s:>10} | {s:>10}\n", .{
-        "Size", "Scalar", "Vector", "Poly1305", "Vec Speed", "vs 1305",
+    try stdout.print("{s:<12} | {s:>12} | {s:>12} | {s:>10}\n", .{
+        "Size", "Poly1163", "Poly1305", "vs 1305",
     });
-    try stdout.print("{s:-<12}-+-{s:->12}-+-{s:->12}-+-{s:->12}-+-{s:->10}-+-{s:->10}\n", .{ "", "", "", "", "", "" });
+    try stdout.print("{s:-<12}-+-{s:->12}-+-{s:->12}-+-{s:->10}\n", .{ "", "", "", "" });
 
     for (configs) |config| {
         const data = try allocator.alloc(u8, config.data_size);
         defer allocator.free(data);
         random.bytes(data);
 
-        const scalar_ns = try benchmarkPoly1163Scalar(key_1163, data, config.iterations);
-        const vector_ns = try benchmarkPoly1163Vector(key_1163, data, config.iterations);
+        const poly1163_ns = try benchmarkPoly1163(key_1163, data, config.iterations);
         const poly1305_ns = try benchmarkPoly1305(key_1305, data, config.iterations);
 
-        const vec_speedup = @as(f64, @floatFromInt(scalar_ns)) / @as(f64, @floatFromInt(vector_ns));
-        const vs_1305 = @as(f64, @floatFromInt(poly1305_ns)) / @as(f64, @floatFromInt(vector_ns));
+        const vs_1305 = @as(f64, @floatFromInt(poly1305_ns)) / @as(f64, @floatFromInt(poly1163_ns));
 
-        try stdout.print("{s:<12} | {d:>12.1} | {d:>12.1} | {d:>12.1} | {d:>9.2}x | {d:>9.2}x\n", .{
+        try stdout.print("{s:<12} | {d:>12.1} | {d:>12.1} | {d:>9.2}x\n", .{
             config.name,
-            @as(f64, @floatFromInt(scalar_ns)),
-            @as(f64, @floatFromInt(vector_ns)),
+            @as(f64, @floatFromInt(poly1163_ns)),
             @as(f64, @floatFromInt(poly1305_ns)),
-            vec_speedup,
             vs_1305,
         });
     }
 
-    try stdout.print("\nOptimizations in Vector version:\n", .{});
-    try stdout.print("- Horner's method for 4 blocks in parallel\n", .{});
-    try stdout.print("- @Vector types for SIMD operations\n", .{});
+    try stdout.print("\nOptimizations:\n", .{});
+    try stdout.print("- Horner's method for parallel block processing\n", .{});
+    try stdout.print("- Efficient 58-bit limb arithmetic\n", .{});
 }
 
-fn benchmarkPoly1163Scalar(key: [32]u8, data: []const u8, iterations: u32) !u64 {
+fn benchmarkPoly1163(key: [32]u8, data: []const u8, iterations: u32) !u64 {
     var timer = try std.time.Timer.start();
 
     var i: u32 = 0;
     while (i < iterations) : (i += 1) {
-        var poly = scalar.Poly1163Scalar.init(key);
-        poly.update(data);
-        const tag = poly.final();
-        std.mem.doNotOptimizeAway(&tag);
-    }
-
-    const elapsed = timer.read();
-    return elapsed / iterations;
-}
-
-fn benchmarkPoly1163Vector(key: [32]u8, data: []const u8, iterations: u32) !u64 {
-    var timer = try std.time.Timer.start();
-
-    var i: u32 = 0;
-    while (i < iterations) : (i += 1) {
-        var poly = vector.Poly1163Vector.init(key);
+        var poly = poly1163.Poly1163.init(key);
         poly.update(data);
         const tag = poly.final();
         std.mem.doNotOptimizeAway(&tag);
