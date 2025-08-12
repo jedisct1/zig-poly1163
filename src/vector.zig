@@ -6,18 +6,7 @@ const builtin = @import("builtin");
 const BLOCK_SIZE = 14;
 const TAG_SIZE = 16;
 const KEY_SIZE = 32;
-
-// Vector width for parallel processing - can be adjusted for different platforms
-// Common values: 2, 4, 8, 16 depending on SIMD capabilities
-const VECTOR_WIDTH = 4;
-
-pub const has_avx2 = blk: {
-    if (builtin.cpu.arch != .x86_64) break :blk false;
-    break :blk std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
-};
-
-// Vector type for SIMD operations
-const Vec128 = @Vector(VECTOR_WIDTH, u128);
+const VECTOR_WIDTH = 8;
 
 pub const Poly1163Vector = struct {
     r: u128,
@@ -25,18 +14,17 @@ pub const Poly1163Vector = struct {
     acc: u128,
     buf: [BLOCK_SIZE * VECTOR_WIDTH]u8,
     buf_len: usize,
-    // Precomputed powers of r for Horner's method (vectorized)
-    r_powers_vec: Vec128,
+    r_powers: [VECTOR_WIDTH]u128, // Precomputed powers r^1, r^2, ..., r^8 for parallel processing
 
     pub fn init(key_bytes: [KEY_SIZE]u8) Poly1163Vector {
         const r = mem.readInt(u128, key_bytes[0..16], .little) & (((@as(u128, 1) << 112) - 1));
         const s = mem.readInt(u128, key_bytes[16..32], .little);
 
-        // Precompute powers of r: r, r^2, r^3, r^4 directly as vector
-        var r_powers_vec: Vec128 = undefined;
-        r_powers_vec[0] = r;
+        // Precompute powers of r for Horner's method optimization
+        var r_powers: [VECTOR_WIDTH]u128 = undefined;
+        r_powers[0] = r;
         for (1..VECTOR_WIDTH) |i| {
-            r_powers_vec[i] = multiplyMod(r_powers_vec[i - 1], r);
+            r_powers[i] = multiplyMod(r_powers[i - 1], r);
         }
 
         return Poly1163Vector{
@@ -45,28 +33,27 @@ pub const Poly1163Vector = struct {
             .acc = 0,
             .buf = undefined,
             .buf_len = 0,
-            .r_powers_vec = r_powers_vec,
+            .r_powers = r_powers,
         };
     }
 
     pub fn update(self: *Poly1163Vector, data: []const u8) void {
         var input = data;
 
-        // Handle buffered data
         if (self.buf_len > 0) {
             const needed = @min(BLOCK_SIZE * VECTOR_WIDTH - self.buf_len, input.len);
             @memcpy(self.buf[self.buf_len..][0..needed], input[0..needed]);
             self.buf_len += needed;
             input = input[needed..];
 
-            // Process complete vector blocks from buffer
             if (self.buf_len >= BLOCK_SIZE * VECTOR_WIDTH) {
                 self.processVectorBlocks(self.buf[0 .. BLOCK_SIZE * VECTOR_WIDTH]);
                 self.buf_len = 0;
             } else if (self.buf_len >= BLOCK_SIZE and input.len == 0) {
-                // Process any complete blocks in buffer if no more input
                 const complete_blocks = self.buf_len / BLOCK_SIZE;
-                self.processPartialVector(self.buf[0 .. complete_blocks * BLOCK_SIZE], complete_blocks);
+                for (0..complete_blocks) |i| {
+                    self.processBlock(self.buf[i * BLOCK_SIZE .. (i + 1) * BLOCK_SIZE]);
+                }
                 const remaining = self.buf_len % BLOCK_SIZE;
                 if (remaining > 0) {
                     std.mem.copyForwards(u8, self.buf[0..remaining], self.buf[complete_blocks * BLOCK_SIZE .. self.buf_len]);
@@ -75,20 +62,24 @@ pub const Poly1163Vector = struct {
             }
         }
 
-        // Process full vector blocks using optimized loading
+        // Prefetch upcoming data for better cache utilization
+        if (builtin.cpu.arch == .x86_64 and input.len >= 256) {
+            @prefetch(input.ptr + 256, .{ .rw = .read, .locality = 3, .cache = .data });
+        }
+
         while (input.len >= BLOCK_SIZE * VECTOR_WIDTH) {
+            if (builtin.cpu.arch == .x86_64 and input.len >= BLOCK_SIZE * VECTOR_WIDTH + 256) {
+                @prefetch(input.ptr + BLOCK_SIZE * VECTOR_WIDTH + 256, .{ .rw = .read, .locality = 3, .cache = .data });
+            }
             self.processVectorBlocks(input[0 .. BLOCK_SIZE * VECTOR_WIDTH]);
             input = input[BLOCK_SIZE * VECTOR_WIDTH ..];
         }
 
-        // Process remaining complete blocks
-        if (input.len >= BLOCK_SIZE) {
-            const complete_blocks = input.len / BLOCK_SIZE;
-            self.processPartialVector(input[0 .. complete_blocks * BLOCK_SIZE], complete_blocks);
-            input = input[complete_blocks * BLOCK_SIZE ..];
+        while (input.len >= BLOCK_SIZE) {
+            self.processBlock(input[0..BLOCK_SIZE]);
+            input = input[BLOCK_SIZE..];
         }
 
-        // Buffer remaining bytes
         if (input.len > 0) {
             @memcpy(self.buf[self.buf_len..][0..input.len], input);
             self.buf_len += input.len;
@@ -96,91 +87,46 @@ pub const Poly1163Vector = struct {
     }
 
     fn processVectorBlocks(self: *Poly1163Vector, blocks: []const u8) void {
-        var values_vec: Vec128 = undefined;
+        var values: [VECTOR_WIDTH]u128 = undefined;
 
-        // Load all blocks directly into vector
+        // Load 8 blocks in parallel, using 64-bit reads for efficiency
         inline for (0..VECTOR_WIDTH) |i| {
             const block = blocks[i * BLOCK_SIZE .. (i + 1) * BLOCK_SIZE];
-            var val: u128 = 0;
-
-            // Load bytes using vectorized operations where beneficial
-            if (BLOCK_SIZE >= 8) {
-                // Load first 8 bytes as u64
-                val |= mem.readInt(u64, block[0..8], .little);
-                // Load remaining 6 bytes
-                for (8..BLOCK_SIZE) |j| {
-                    val |= @as(u128, block[j]) << @intCast(j * 8);
-                }
-            } else {
-                for (0..BLOCK_SIZE) |j| {
-                    val |= @as(u128, block[j]) << @intCast(j * 8);
-                }
+            const low = mem.readInt(u64, block[0..8], .little);
+            var high: u64 = 0;
+            inline for (0..6) |j| {
+                high |= @as(u64, block[8 + j]) << @intCast(j * 8);
             }
-            val |= @as(u128, 1) << (BLOCK_SIZE * 8);
-            values_vec[i] = val;
+            values[i] = @as(u128, low) | (@as(u128, high) << 64) | (@as(u128, 1) << (BLOCK_SIZE * 8));
         }
 
-        // Apply Horner's method: acc = ((...((acc + m0) * r^n + m1) * r^(n-1) + m2) * ... + m_{n-1}) * r
-        // First, add first block to accumulator and multiply by r^(VECTOR_WIDTH-1)
-        self.acc +%= values_vec[0];
-        self.acc = multiplyMod(self.acc, self.r_powers_vec[VECTOR_WIDTH - 1]);
+        // Horner's method: acc = ((acc + v0) * r^8 + v1 * r^7 + ... + v7 * r)
+        self.acc +%= values[0];
+        self.acc = multiplyMod(self.acc, self.r_powers[VECTOR_WIDTH - 1]);
 
-        // Process remaining blocks in parallel using SIMD
-        // Create vectors with appropriate powers for each block position
-        var powers_for_mult: Vec128 = @splat(0);
-        var shifted_values: Vec128 = @splat(0);
-
-        // Set up powers and values for parallel multiplication
-        // For i-th block (1 <= i < VECTOR_WIDTH), we need r^(VECTOR_WIDTH-1-i)
         inline for (1..VECTOR_WIDTH) |i| {
-            powers_for_mult[i - 1] = self.r_powers_vec[VECTOR_WIDTH - 1 - i];
-            shifted_values[i - 1] = values_vec[i];
-        }
-
-        // Perform vectorized multiplication
-        const products = multiplyModVec(shifted_values, powers_for_mult);
-
-        // Sum the results (reduction to scalar)
-        inline for (0..VECTOR_WIDTH - 1) |i| {
-            self.acc +%= products[i];
-        }
-    }
-
-    fn processPartialVector(self: *Poly1163Vector, blocks: []const u8, num_blocks: usize) void {
-        if (num_blocks == 0) return;
-
-        var values_vec: Vec128 = @splat(0);
-
-        // Load available blocks into vector
-        for (0..num_blocks) |i| {
-            const block = blocks[i * BLOCK_SIZE .. (i + 1) * BLOCK_SIZE];
-            var val: u128 = 0;
-            for (0..BLOCK_SIZE) |j| {
-                val |= @as(u128, block[j]) << @intCast(j * 8);
-            }
-            val |= @as(u128, 1) << (BLOCK_SIZE * 8);
-            values_vec[i] = val;
-        }
-
-        // Process with Horner's method using only num_blocks powers
-        self.acc +%= values_vec[0];
-        self.acc = multiplyMod(self.acc, self.r_powers_vec[num_blocks - 1]);
-
-        for (1..num_blocks) |i| {
-            const power_idx = num_blocks - 1 - i;
-            const term = multiplyMod(values_vec[i], self.r_powers_vec[power_idx]);
-            self.acc +%= term;
+            const product = multiplyMod(values[i], self.r_powers[VECTOR_WIDTH - 1 - i]);
+            self.acc +%= product;
         }
     }
 
     fn processBlock(self: *Poly1163Vector, block: []const u8) void {
         const len = @min(block.len, BLOCK_SIZE);
         var val: u128 = 0;
-        for (0..len) |i| {
-            val |= @as(u128, block[i]) << @intCast(i * 8);
+        
+        if (len >= 8) {
+            val = mem.readInt(u64, block[0..8], .little);
+            for (8..len) |i| {
+                val |= @as(u128, block[i]) << @intCast(i * 8);
+            }
+        } else {
+            for (0..len) |i| {
+                val |= @as(u128, block[i]) << @intCast(i * 8);
+            }
         }
+        
         const shift_amount = @as(u7, @intCast(len)) * 8;
-        val |= @as(u128, 1) << shift_amount;
+        val |= @as(u128, 1) << shift_amount; // Append 1-bit after message block
 
         self.acc +%= val;
         self.acc = multiplyMod(self.acc, self.r);
@@ -192,15 +138,12 @@ pub const Poly1163Vector = struct {
     }
 
     pub fn final(self: *Poly1163Vector) [TAG_SIZE]u8 {
-        // Process any remaining buffered data
         if (self.buf_len > 0) {
-            // Process complete blocks first
             const complete_blocks = self.buf_len / BLOCK_SIZE;
-            if (complete_blocks > 0) {
-                self.processPartialVector(self.buf[0 .. complete_blocks * BLOCK_SIZE], complete_blocks);
+            for (0..complete_blocks) |i| {
+                self.processBlock(self.buf[i * BLOCK_SIZE .. (i + 1) * BLOCK_SIZE]);
             }
 
-            // Process final partial block
             const remaining = self.buf_len % BLOCK_SIZE;
             if (remaining > 0) {
                 self.processBlock(self.buf[complete_blocks * BLOCK_SIZE ..][0..remaining]);
@@ -215,15 +158,18 @@ pub const Poly1163Vector = struct {
         return tag;
     }
 
+    // Modular multiplication using 2^116 - 3 prime with 58-bit limbs
     fn multiplyMod(a: u128, b: u128) u128 {
         const mask58 = (@as(u128, 1) << 58) - 1;
+        
         const a0 = a & mask58;
         const a1 = a >> 58;
         const b0 = b & mask58;
         const b1 = b >> 58;
 
+        // Karatsuba-like multiplication with modular reduction
         var d0: u128 = a0 * b0;
-        d0 +%= a1 * (b1 * 3);
+        d0 +%= a1 * (b1 * 3); // b1 * 3 because 2^116 ≡ 3 (mod p)
 
         var d1: u128 = a0 * b1;
         d1 +%= a1 * b0;
@@ -256,6 +202,7 @@ pub const Poly1163Vector = struct {
         var t1 = a1 +% c;
         t1 +%= ~mask58;
 
+        // Constant-time selection using bitmasking
         const mask = if ((t1 >> 63) != 0) @as(u128, 0) else ~@as(u128, 0);
         const inv_mask = ~mask;
 
@@ -277,92 +224,12 @@ pub const Poly1163Vector = struct {
         const c1 = t1 >> 58;
         const res1 = t1 & mask58;
 
-        const c2 = c1 * 3;
+        const c2 = c1 * 3; // Reduction: 2^116 ≡ 3 (mod p)
         var res0 = res0_tmp + c2;
         const c3 = res0 >> 58;
         res0 = res0 & mask58;
 
         return res0 + ((res1 + c3) << 58);
-    }
-
-    // Vectorized versions of the modular arithmetic functions
-    fn multiplyModVec(a: Vec128, b: Vec128) Vec128 {
-        const mask58: Vec128 = @splat((@as(u128, 1) << 58) - 1);
-        const three: Vec128 = @splat(3);
-
-        const a0 = a & mask58;
-        const a1 = a >> @splat(58);
-        const b0 = b & mask58;
-        const b1 = b >> @splat(58);
-
-        var d0 = a0 *% b0;
-        d0 +%= a1 *% (b1 *% three);
-
-        var d1 = a0 *% b1;
-        d1 +%= a1 *% b0;
-
-        const c0 = d0 >> @splat(58);
-        const res0_tmp = d0 & mask58;
-        d1 +%= c0;
-
-        const c1 = d1 >> @splat(58);
-        const res1 = d1 & mask58;
-
-        const c2 = c1 *% three;
-        var res0 = res0_tmp +% c2;
-        const c3 = res0 >> @splat(58);
-        res0 = res0 & mask58;
-
-        return res0 +% ((res1 +% c3) << @splat(58));
-    }
-
-    fn carryVec(a: Vec128) Vec128 {
-        const mask58: Vec128 = @splat((@as(u128, 1) << 58) - 1);
-        const three: Vec128 = @splat(3);
-
-        const a0 = a & mask58;
-        const a1 = a >> @splat(58);
-
-        const c0 = a0 >> @splat(58);
-        const res0_tmp = a0 & mask58;
-        const t1 = a1 +% c0;
-
-        const c1 = t1 >> @splat(58);
-        const res1 = t1 & mask58;
-
-        const c2 = c1 *% three;
-        var res0 = res0_tmp +% c2;
-        const c3 = res0 >> @splat(58);
-        res0 = res0 & mask58;
-
-        return res0 +% ((res1 +% c3) << @splat(58));
-    }
-
-    fn reduceVec(a: Vec128) Vec128 {
-        const val = carryVec(a);
-        const mask58: Vec128 = @splat((@as(u128, 1) << 58) - 1);
-        const three: Vec128 = @splat(3);
-
-        const a0 = val & mask58;
-        const a1 = val >> @splat(58);
-
-        var t0 = a0 +% three;
-        const c = t0 >> @splat(58);
-        t0 &= mask58;
-
-        var t1 = a1 +% c;
-        t1 +%= @as(Vec128, @splat(~((@as(u128, 1) << 58) - 1)));
-
-        // For the conditional mask, we need to check each lane separately
-        // This is the tricky part for SIMD - we need branchless selection
-        const sign_bits = t1 >> @splat(63);
-        const mask = sign_bits *% @as(Vec128, @splat(~@as(u128, 0)));
-        const inv_mask = ~mask;
-
-        const res0 = (a0 & inv_mask) | (t0 & mask);
-        const res1 = (a1 & inv_mask) | (t1 & mask);
-
-        return res0 +% (res1 << @splat(58));
     }
 };
 
