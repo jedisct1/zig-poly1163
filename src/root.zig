@@ -108,13 +108,13 @@ pub const Poly1163 = struct {
         var pos: usize = 0;
         while (pos + 55 < input.len) {
             var msg: [4]Vec4x64 = undefined;
-            self.load256(input[pos..], &msg);
+            load256(input[pos..], &msg);
             self.multiplyAndReduce(&msg);
             pos += 56;
         }
     }
 
-    fn load256(_: *Poly1163, input: []const u8, msg: *[4]Vec4x64) void {
+    fn load256(input: []const u8, msg: *[4]Vec4x64) void {
         const lower29_mask = @as(u64, (1 << 29) - 1);
         const lower25_mask = @as(u64, (1 << 25) - 1);
         const block_mask = (@as(u128, 1) << 112) - 1;
