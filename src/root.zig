@@ -133,12 +133,65 @@ pub const Poly1163 = struct {
 
     fn multiplyAndReduce(self: *Poly1163, msg: *const [4]Vec4x64) void {
         const mask29 = @as(Vec4x64, @splat((1 << 29) - 1));
+
+        // Add message to hash
         inline for (0..4) |i| {
             self.hash[i] +%= msg[i];
         }
-        inline for (0..4) |i| {
-            self.hash[i] = (self.hash[i] * self.key_powers[0][i]) & mask29;
-        }
+
+        // Multiply hash by r^4 (polynomial multiplication mod 2^116-3)
+        // T0 = h0*r0 + h1*s3 + h2*s2 + h3*s1
+        // T1 = h0*r1 + h1*r0 + h2*s3 + h3*s2
+        // T2 = h0*r2 + h1*r1 + h2*r0 + h3*s3
+        // T3 = h0*r3 + h1*r2 + h2*r1 + h3*r0
+
+        var t: [4]Vec4x64 = undefined;
+
+        // T0 = h0*r0 + h1*s3 + h2*s2 + h3*s1
+        t[0] = self.hash[0] * self.key_powers[0][0] +%
+            self.hash[1] * self.key_powers[0][6] +%
+            self.hash[2] * self.key_powers[0][5] +%
+            self.hash[3] * self.key_powers[0][4];
+
+        // T1 = h0*r1 + h1*r0 + h2*s3 + h3*s2
+        t[1] = self.hash[0] * self.key_powers[0][1] +%
+            self.hash[1] * self.key_powers[0][0] +%
+            self.hash[2] * self.key_powers[0][6] +%
+            self.hash[3] * self.key_powers[0][5];
+
+        // T2 = h0*r2 + h1*r1 + h2*r0 + h3*s3
+        t[2] = self.hash[0] * self.key_powers[0][2] +%
+            self.hash[1] * self.key_powers[0][1] +%
+            self.hash[2] * self.key_powers[0][0] +%
+            self.hash[3] * self.key_powers[0][6];
+
+        // T3 = h0*r3 + h1*r2 + h2*r1 + h3*r0
+        t[3] = self.hash[0] * self.key_powers[0][3] +%
+            self.hash[1] * self.key_powers[0][2] +%
+            self.hash[2] * self.key_powers[0][1] +%
+            self.hash[3] * self.key_powers[0][0];
+
+        // Carry propagation
+        var carry = t[0] >> @splat(29);
+        self.hash[0] = t[0] & mask29;
+
+        t[1] +%= carry;
+        carry = t[1] >> @splat(29);
+        self.hash[1] = t[1] & mask29;
+
+        t[2] +%= carry;
+        carry = t[2] >> @splat(29);
+        self.hash[2] = t[2] & mask29;
+
+        t[3] +%= carry;
+        carry = t[3] >> @splat(29);
+        self.hash[3] = t[3] & mask29;
+
+        // Final reduction: multiply carry by 3 and add to hash[0]
+        self.hash[0] +%= carry +% carry +% carry;
+        carry = self.hash[0] >> @splat(29);
+        self.hash[0] &= mask29;
+        self.hash[1] +%= carry;
     }
 
     pub fn final(self: *Poly1163) [TAG_SIZE]u8 {
