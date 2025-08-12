@@ -6,7 +6,10 @@ const builtin = @import("builtin");
 const BLOCK_SIZE = 14;
 const TAG_SIZE = 16;
 const KEY_SIZE = 32;
-const VECTOR_WIDTH = 4; // Process 4 blocks in parallel
+
+// Vector width for parallel processing - can be adjusted for different platforms
+// Common values: 2, 4, 8, 16 depending on SIMD capabilities
+const VECTOR_WIDTH = 4;
 
 pub const has_avx2 = blk: {
     if (builtin.cpu.arch != .x86_64) break :blk false;
@@ -117,32 +120,28 @@ pub const Poly1163Vector = struct {
             values_vec[i] = val;
         }
 
-        // Use vectorized multiplication for parallel processing
-        // We need to reorganize for Horner's method with SIMD
-        // First, multiply first block with accumulator scalar
+        // Apply Horner's method: acc = ((...((acc + m0) * r^n + m1) * r^(n-1) + m2) * ... + m_{n-1}) * r
+        // First, add first block to accumulator and multiply by r^(VECTOR_WIDTH-1)
         self.acc +%= values_vec[0];
         self.acc = multiplyMod(self.acc, self.r_powers_vec[VECTOR_WIDTH - 1]);
         
         // Process remaining blocks in parallel using SIMD
-        // Create a vector with the appropriate powers for blocks 1-3
-        var powers_for_mult: Vec128 = undefined;
-        powers_for_mult[0] = self.r_powers_vec[2]; // for block 1: r^3
-        powers_for_mult[1] = self.r_powers_vec[1]; // for block 2: r^2
-        powers_for_mult[2] = self.r_powers_vec[0]; // for block 3: r^1
-        powers_for_mult[3] = 0; // unused
+        // Create vectors with appropriate powers for each block position
+        var powers_for_mult: Vec128 = @splat(0);
+        var shifted_values: Vec128 = @splat(0);
         
-        // Shift values to align with powers
-        var shifted_values: Vec128 = undefined;
-        shifted_values[0] = values_vec[1];
-        shifted_values[1] = values_vec[2];
-        shifted_values[2] = values_vec[3];
-        shifted_values[3] = 0;
+        // Set up powers and values for parallel multiplication
+        // For i-th block (1 <= i < VECTOR_WIDTH), we need r^(VECTOR_WIDTH-1-i)
+        inline for (1..VECTOR_WIDTH) |i| {
+            powers_for_mult[i - 1] = self.r_powers_vec[VECTOR_WIDTH - 1 - i];
+            shifted_values[i - 1] = values_vec[i];
+        }
         
         // Perform vectorized multiplication
         const products = multiplyModVec(shifted_values, powers_for_mult);
         
         // Sum the results (reduction to scalar)
-        for (0..3) |i| {
+        inline for (0..VECTOR_WIDTH - 1) |i| {
             self.acc +%= products[i];
         }
     }
