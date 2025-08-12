@@ -5,7 +5,7 @@ const crypto = std.crypto;
 const BLOCK_SIZE = 14;
 const TAG_SIZE = 16;
 const KEY_SIZE = 32;
-const VECTOR_WIDTH = std.simd.suggestVectorLength(u64) orelse 2;
+const VECTOR_WIDTH = std.simd.suggestVectorLength(u128) orelse 1;
 
 pub const Poly1163 = struct {
     r: u128,
@@ -13,14 +13,14 @@ pub const Poly1163 = struct {
     acc: u128,
     buf: [BLOCK_SIZE * VECTOR_WIDTH]u8,
     buf_len: usize,
-    r_powers: [VECTOR_WIDTH]u128, // Precomputed powers r^1, r^2, ..., r^VECTOR_WIDTH for parallel processing
+    r_powers: @Vector(VECTOR_WIDTH, u128), // Precomputed powers r^1, r^2, ..., r^VECTOR_WIDTH for parallel processing
 
     pub fn init(key_bytes: [KEY_SIZE]u8) Poly1163 {
         const r = mem.readInt(u128, key_bytes[0..16], .little) & (((@as(u128, 1) << 112) - 1));
         const s = mem.readInt(u128, key_bytes[16..32], .little);
 
         // Precompute powers of r for Horner's method optimization
-        var r_powers: [VECTOR_WIDTH]u128 = undefined;
+        var r_powers: @Vector(VECTOR_WIDTH, u128) = undefined;
         r_powers[0] = r;
         for (1..VECTOR_WIDTH) |i| {
             r_powers[i] = multiplyMod(r_powers[i - 1], r);
@@ -82,9 +82,9 @@ pub const Poly1163 = struct {
     }
 
     fn processVectorBlocks(self: *Poly1163, blocks: []const u8) void {
-        var values: [VECTOR_WIDTH]u128 = undefined;
+        var values: @Vector(VECTOR_WIDTH, u128) = undefined;
 
-        // Load VECTOR_WIDTH blocks in parallel, using 64-bit reads for efficiency
+        // Load VECTOR_WIDTH blocks in parallel
         inline for (0..VECTOR_WIDTH) |i| {
             const block = blocks[i * BLOCK_SIZE .. (i + 1) * BLOCK_SIZE];
             const low = mem.readInt(u64, block[0..8], .little);
@@ -95,14 +95,29 @@ pub const Poly1163 = struct {
             values[i] = @as(u128, low) | (@as(u128, high) << 64) | (@as(u128, 1) << (BLOCK_SIZE * 8));
         }
 
-        // Horner's method: acc = ((acc + v0) * r^VECTOR_WIDTH + v1 * r^(VECTOR_WIDTH-1) + ... + v(VECTOR_WIDTH-1) * r)
+        // Create reversed r_powers for correct Horner's method pairing
+        var r_powers_reversed: @Vector(VECTOR_WIDTH, u128) = undefined;
+        inline for (0..VECTOR_WIDTH) |i| {
+            r_powers_reversed[i] = self.r_powers[VECTOR_WIDTH - 1 - i];
+        }
+        
+        // Use SIMD for parallel multiplication: values[1..] * r_powers_reversed[1..]
+        // Skip first element as it's handled separately
+        var values_to_multiply = values;
+        values_to_multiply[0] = 0; // Zero out first element for multiplication
+        
+        const products = multiplyModVector(values_to_multiply, r_powers_reversed);
+        
+        // Horner's method: acc = ((acc + v0) * r^VECTOR_WIDTH + sum(products[1..]))
         self.acc +%= values[0];
         self.acc = multiplyMod(self.acc, self.r_powers[VECTOR_WIDTH - 1]);
-
+        
+        // Sum the products using vector reduction
+        var sum: u128 = 0;
         inline for (1..VECTOR_WIDTH) |i| {
-            const product = multiplyMod(values[i], self.r_powers[VECTOR_WIDTH - 1 - i]);
-            self.acc +%= product;
+            sum +%= products[i];
         }
+        self.acc +%= sum;
     }
 
     fn processBlock(self: *Poly1163, block: []const u8) void {
@@ -151,6 +166,39 @@ pub const Poly1163 = struct {
         var tag: [TAG_SIZE]u8 = undefined;
         mem.writeInt(u128, &tag, self.acc, .little);
         return tag;
+    }
+
+    // Vectorized modular multiplication for multiple independent multiplications
+    fn multiplyModVector(a: @Vector(VECTOR_WIDTH, u128), b: @Vector(VECTOR_WIDTH, u128)) @Vector(VECTOR_WIDTH, u128) {
+        const mask58: @Vector(VECTOR_WIDTH, u128) = @splat((@as(u128, 1) << 58) - 1);
+        const three: @Vector(VECTOR_WIDTH, u128) = @splat(3);
+        
+        // Split operands into 58-bit limbs using SIMD operations
+        const a0 = a & mask58;
+        const a1 = a >> @splat(58);
+        const b0 = b & mask58;
+        const b1 = b >> @splat(58);
+        
+        // Karatsuba-like multiplication with vectorized operations
+        var d0 = a0 * b0;
+        d0 += a1 * (b1 * three); // b1 * 3 because 2^116 ≡ 3 (mod p)
+        
+        var d1 = a0 * b1;
+        d1 += a1 * b0;
+        
+        const c0 = d0 >> @splat(58);
+        const res0_tmp = d0 & mask58;
+        d1 += c0;
+        
+        const c1 = d1 >> @splat(58);
+        const res1 = d1 & mask58;
+        
+        const c2 = c1 * three;
+        var res0 = res0_tmp + c2;
+        const c3 = res0 >> @splat(58);
+        res0 = res0 & mask58;
+        
+        return res0 + ((res1 + c3) << @splat(58));
     }
 
     // Modular multiplication using 2^116 - 3 prime with 58-bit limbs
