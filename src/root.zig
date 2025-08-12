@@ -134,44 +134,32 @@ pub const Poly1163 = struct {
     fn multiplyAndReduce(self: *Poly1163, msg: *const [4]Vec4x64) void {
         const mask29 = @as(Vec4x64, @splat((1 << 29) - 1));
 
-        // Add message to hash
         inline for (0..4) |i| {
             self.hash[i] +%= msg[i];
         }
 
-        // Multiply hash by r^4 (polynomial multiplication mod 2^116-3)
-        // T0 = h0*r0 + h1*s3 + h2*s2 + h3*s1
-        // T1 = h0*r1 + h1*r0 + h2*s3 + h3*s2
-        // T2 = h0*r2 + h1*r1 + h2*r0 + h3*s3
-        // T3 = h0*r3 + h1*r2 + h2*r1 + h3*r0
-
         var t: [4]Vec4x64 = undefined;
 
-        // T0 = h0*r0 + h1*s3 + h2*s2 + h3*s1
         t[0] = self.hash[0] * self.key_powers[0][0] +%
             self.hash[1] * self.key_powers[0][6] +%
             self.hash[2] * self.key_powers[0][5] +%
             self.hash[3] * self.key_powers[0][4];
 
-        // T1 = h0*r1 + h1*r0 + h2*s3 + h3*s2
         t[1] = self.hash[0] * self.key_powers[0][1] +%
             self.hash[1] * self.key_powers[0][0] +%
             self.hash[2] * self.key_powers[0][6] +%
             self.hash[3] * self.key_powers[0][5];
 
-        // T2 = h0*r2 + h1*r1 + h2*r0 + h3*s3
         t[2] = self.hash[0] * self.key_powers[0][2] +%
             self.hash[1] * self.key_powers[0][1] +%
             self.hash[2] * self.key_powers[0][0] +%
             self.hash[3] * self.key_powers[0][6];
 
-        // T3 = h0*r3 + h1*r2 + h2*r1 + h3*r0
         t[3] = self.hash[0] * self.key_powers[0][3] +%
             self.hash[1] * self.key_powers[0][2] +%
             self.hash[2] * self.key_powers[0][1] +%
             self.hash[3] * self.key_powers[0][0];
 
-        // Carry propagation
         var carry = t[0] >> @splat(29);
         self.hash[0] = t[0] & mask29;
 
@@ -187,7 +175,6 @@ pub const Poly1163 = struct {
         carry = t[3] >> @splat(29);
         self.hash[3] = t[3] & mask29;
 
-        // Final reduction: multiply carry by 3 and add to hash[0]
         self.hash[0] +%= carry +% carry +% carry;
         carry = self.hash[0] >> @splat(29);
         self.hash[0] &= mask29;
@@ -195,27 +182,34 @@ pub const Poly1163 = struct {
     }
 
     pub fn final(self: *Poly1163) [TAG_SIZE]u8 {
-        var acc = self.combineHash();
-
         if (self.remaining > 0) {
             const full_blocks = self.remaining / (4 * 14);
             if (full_blocks > 0) {
                 self.core(self.buf[0 .. full_blocks * 4 * 14]);
-                acc = self.combineHash();
             }
+
+            var acc = self.combineHash();
 
             var pos = full_blocks * 4 * 14;
             while (pos < self.remaining) {
                 const block_len = @min(14, self.remaining - pos);
-                var block: [16]u8 = [_]u8{0} ** 16;
-                @memcpy(block[0..block_len], self.buf[pos .. pos + block_len]);
-                const val = load64(block[0..], block_len);
-                acc = scalar128Mult(addMod(acc, val), self.key);
-                pos += block_len;
+                acc +%= load64(self.buf[pos..], block_len);
+                acc = scalar128Mult(acc, self.key);
+                pos += 14;
             }
+
+            acc = scalar128Reduce(acc);
+            acc +%= self.blind;
+
+            var tag: [TAG_SIZE]u8 = undefined;
+            mem.writeInt(u128, &tag, acc, .little);
+            return tag;
         }
 
-        acc = scalar128Reduce(acc) +% self.blind;
+        var acc = self.combineHash();
+        acc = scalar128Reduce(acc);
+        acc +%= self.blind;
+
         var tag: [TAG_SIZE]u8 = undefined;
         mem.writeInt(u128, &tag, acc, .little);
         return tag;
@@ -227,11 +221,12 @@ pub const Poly1163 = struct {
     }
 
     fn combineHash(self: *Poly1163) u128 {
-        var hashes: [4]u128 = undefined;
-        inline for (0..4) |i| {
-            hashes[i] = self.hash[0][i] + (self.hash[1][i] << 29) + (self.hash[2][i] << 58) + (@as(u128, self.hash[3][i]) << 87);
-        }
-        return scalar128Reduce(addMod(addMod(hashes[0], hashes[1]), addMod(hashes[2], hashes[3])));
+        const hash_a = self.hash[0][0] + (self.hash[1][0] << 29) + (self.hash[2][0] << 58) + (@as(u128, self.hash[3][0]) << 87);
+        const hash_b = self.hash[0][2] + (self.hash[1][2] << 29) + (self.hash[2][2] << 58) + (@as(u128, self.hash[3][2]) << 87);
+        const hash_c = self.hash[0][1] + (self.hash[1][1] << 29) + (self.hash[2][1] << 58) + (@as(u128, self.hash[3][1]) << 87);
+        const hash_d = self.hash[0][3] + (self.hash[1][3] << 29) + (self.hash[2][3] << 58) + (@as(u128, self.hash[3][3]) << 87);
+
+        return scalar128Reduce(hash_a +% hash_b +% hash_c +% hash_d);
     }
 };
 
@@ -242,21 +237,47 @@ inline fn scalar128Mult(a: u128, b: u128) u128 {
     const b0 = b & mask58;
     const b1 = b >> 58;
 
-    const d0 = a0 * b0 + a1 * b1 * 3;
-    const d1 = a0 * b1 + a1 * b0 + (d0 >> 58);
-    const t0 = (d0 & mask58) + (d1 >> 58) * 3;
-    return (t0 & mask58) + ((d1 & mask58) + (t0 >> 58)) << 58;
+    var d: [2]u128 = .{ 0, 0 };
+
+    d[0] = a0 * b0;
+    d[0] += a1 * (b1 * 3);
+
+    d[1] = a0 * b1;
+    d[1] += a1 * b0;
+
+    const c0 = d[0] >> 58;
+    const res0_tmp = d[0] & mask58;
+    d[1] += c0;
+
+    const c1 = d[1] >> 58;
+    const res1 = d[1] & mask58;
+
+    const c2 = c1 * 3;
+    var res0 = res0_tmp + c2;
+    const c3 = res0 >> 58;
+    res0 = res0 & mask58;
+
+    return res0 + ((res1 + c3) << 58);
 }
 
 inline fn scalar128Carry(a: u128) u128 {
     const mask58 = (@as(u128, 1) << 58) - 1;
     const a0 = a & mask58;
     const a1 = a >> 58;
-    const res0 = a0 & mask58;
-    const t1 = a1 + (a0 >> 58);
+
+    const c0 = a0 >> 58;
+    const res0_tmp = a0 & mask58;
+    const t1 = a1 + c0;
+
+    const c1 = t1 >> 58;
     const res1 = t1 & mask58;
-    const t0 = res0 + (t1 >> 58) * 3;
-    return (t0 & mask58) + ((res1 + (t0 >> 58)) << 58);
+
+    const c2 = c1 * 3;
+    var res0 = res0_tmp + c2;
+    const c3 = res0 >> 58;
+    res0 = res0 & mask58;
+
+    return res0 + ((res1 + c3) << 58);
 }
 
 inline fn scalar128Reduce(a: u128) u128 {
@@ -266,19 +287,26 @@ inline fn scalar128Reduce(a: u128) u128 {
     const a1 = val >> 58;
 
     var t0 = a0 + 3;
-    var t1 = a1 + (t0 >> 58);
+    const c = t0 >> 58;
     t0 &= mask58;
+
+    var t1 = a1 + c;
     t1 +%= ~mask58;
 
     const mask = if ((t1 >> 63) != 0) @as(u128, 0) else ~@as(u128, 0);
-    return ((a0 & ~mask) | (t0 & mask)) + (((a1 & ~mask) | (t1 & mask)) << 58);
+    const inv_mask = ~mask;
+
+    const res0 = (a0 & inv_mask) | (t0 & mask);
+    const res1 = (a1 & inv_mask) | (t1 & mask);
+
+    return res0 + (res1 << 58);
 }
 
 inline fn addMod(a: u128, b: u128) u128 {
     return scalar128Carry(a +% b);
 }
 
-inline fn load64(buf: []const u8, len: u64) u128 {
+inline fn load64(buf: []const u8, len: usize) u128 {
     var val: u128 = 0;
     for (0..len) |i| {
         val |= @as(u128, buf[i]) << @intCast(i * 8);
