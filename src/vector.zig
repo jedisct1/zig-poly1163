@@ -13,8 +13,8 @@ pub const has_avx2 = blk: {
     break :blk std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
 };
 
-// Vector type for SIMD byte loading
-const Vec16u8 = @Vector(16, u8);
+// Vector type for SIMD operations
+const Vec128 = @Vector(VECTOR_WIDTH, u128);
 
 pub const Poly1163Vector = struct {
     r: u128,
@@ -24,6 +24,8 @@ pub const Poly1163Vector = struct {
     buf_len: usize,
     // Precomputed powers of r for Horner's method
     r_powers: [VECTOR_WIDTH]u128,
+    // Vector version of r_powers for SIMD
+    r_powers_vec: Vec128,
 
     pub fn init(key_bytes: [KEY_SIZE]u8) Poly1163Vector {
         const r = mem.readInt(u128, key_bytes[0..16], .little) & (((@as(u128, 1) << 112) - 1));
@@ -36,6 +38,9 @@ pub const Poly1163Vector = struct {
             r_powers[i] = multiplyMod(r_powers[i - 1], r);
         }
 
+        // Create vector version
+        const r_powers_vec: Vec128 = r_powers;
+
         return Poly1163Vector{
             .r = r,
             .s = s,
@@ -43,6 +48,7 @@ pub const Poly1163Vector = struct {
             .buf = undefined,
             .buf_len = 0,
             .r_powers = r_powers,
+            .r_powers_vec = r_powers_vec,
         };
     }
 
@@ -95,7 +101,7 @@ pub const Poly1163Vector = struct {
     fn processVectorBlocks(self: *Poly1163Vector, blocks: []const u8) void {
         var values: [VECTOR_WIDTH]u128 = undefined;
         
-        // Use SIMD to efficiently load blocks if possible
+        // Load all blocks
         inline for (0..VECTOR_WIDTH) |i| {
             const block = blocks[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE];
             var val: u128 = 0;
@@ -117,19 +123,37 @@ pub const Poly1163Vector = struct {
             values[i] = val;
         }
 
-        // Apply Horner's method: acc = ((((acc + m0) * r + m1) * r + m2) * r + m3) * r
-        // Which is equivalent to: acc*r^4 + m0*r^4 + m1*r^3 + m2*r^2 + m3*r
-        // We compute it as: (acc + m0)*r^4 + m1*r^3 + m2*r^2 + m3*r
-        
-        // Start with accumulator plus first block
+        // Use vectorized multiplication for parallel processing
+        // We need to reorganize for Horner's method with SIMD
+        // First, multiply first block with accumulator scalar
         self.acc +%= values[0];
         self.acc = multiplyMod(self.acc, self.r_powers[VECTOR_WIDTH - 1]);
         
-        // Add remaining blocks with their corresponding powers
-        inline for (1..VECTOR_WIDTH) |i| {
-            const power_idx = VECTOR_WIDTH - 1 - i;
-            const term = multiplyMod(values[i], self.r_powers[power_idx]);
-            self.acc +%= term;
+        // Process remaining blocks in parallel using SIMD
+        // Create a vector with the appropriate powers for blocks 1-3
+        var powers_for_mult: [VECTOR_WIDTH]u128 = undefined;
+        powers_for_mult[0] = self.r_powers[2]; // for block 1: r^3
+        powers_for_mult[1] = self.r_powers[1]; // for block 2: r^2
+        powers_for_mult[2] = self.r_powers[0]; // for block 3: r^1
+        powers_for_mult[3] = 0; // unused
+        
+        const powers_vec: Vec128 = powers_for_mult;
+        
+        // Shift values to align with powers
+        var shifted_values: [VECTOR_WIDTH]u128 = undefined;
+        shifted_values[0] = values[1];
+        shifted_values[1] = values[2];
+        shifted_values[2] = values[3];
+        shifted_values[3] = 0;
+        
+        const shifted_vec: Vec128 = shifted_values;
+        
+        // Perform vectorized multiplication
+        const products = multiplyModVec(shifted_vec, powers_vec);
+        
+        // Sum the results (reduction to scalar)
+        for (0..3) |i| {
+            self.acc +%= products[i];
         }
     }
 
@@ -270,6 +294,86 @@ pub const Poly1163Vector = struct {
         res0 = res0 & mask58;
 
         return res0 + ((res1 + c3) << 58);
+    }
+
+    // Vectorized versions of the modular arithmetic functions
+    fn multiplyModVec(a: Vec128, b: Vec128) Vec128 {
+        const mask58: Vec128 = @splat((@as(u128, 1) << 58) - 1);
+        const three: Vec128 = @splat(3);
+        
+        const a0 = a & mask58;
+        const a1 = a >> @splat(58);
+        const b0 = b & mask58;
+        const b1 = b >> @splat(58);
+
+        var d0 = a0 *% b0;
+        d0 +%= a1 *% (b1 *% three);
+
+        var d1 = a0 *% b1;
+        d1 +%= a1 *% b0;
+
+        const c0 = d0 >> @splat(58);
+        const res0_tmp = d0 & mask58;
+        d1 +%= c0;
+
+        const c1 = d1 >> @splat(58);
+        const res1 = d1 & mask58;
+
+        const c2 = c1 *% three;
+        var res0 = res0_tmp +% c2;
+        const c3 = res0 >> @splat(58);
+        res0 = res0 & mask58;
+
+        return res0 +% ((res1 +% c3) << @splat(58));
+    }
+
+    fn carryVec(a: Vec128) Vec128 {
+        const mask58: Vec128 = @splat((@as(u128, 1) << 58) - 1);
+        const three: Vec128 = @splat(3);
+        
+        const a0 = a & mask58;
+        const a1 = a >> @splat(58);
+
+        const c0 = a0 >> @splat(58);
+        const res0_tmp = a0 & mask58;
+        const t1 = a1 +% c0;
+
+        const c1 = t1 >> @splat(58);
+        const res1 = t1 & mask58;
+
+        const c2 = c1 *% three;
+        var res0 = res0_tmp +% c2;
+        const c3 = res0 >> @splat(58);
+        res0 = res0 & mask58;
+
+        return res0 +% ((res1 +% c3) << @splat(58));
+    }
+
+    fn reduceVec(a: Vec128) Vec128 {
+        const val = carryVec(a);
+        const mask58: Vec128 = @splat((@as(u128, 1) << 58) - 1);
+        const three: Vec128 = @splat(3);
+        
+        const a0 = val & mask58;
+        const a1 = val >> @splat(58);
+
+        var t0 = a0 +% three;
+        const c = t0 >> @splat(58);
+        t0 &= mask58;
+
+        var t1 = a1 +% c;
+        t1 +%= @as(Vec128, @splat(~((@as(u128, 1) << 58) - 1)));
+
+        // For the conditional mask, we need to check each lane separately
+        // This is the tricky part for SIMD - we need branchless selection
+        const sign_bits = t1 >> @splat(63);
+        const mask = sign_bits *% @as(Vec128, @splat(~@as(u128, 0)));
+        const inv_mask = ~mask;
+
+        const res0 = (a0 & inv_mask) | (t0 & mask);
+        const res1 = (a1 & inv_mask) | (t1 & mask);
+
+        return res0 +% (res1 << @splat(58));
     }
 };
 
