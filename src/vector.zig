@@ -97,23 +97,20 @@ pub const Poly1163 = struct {
             values[i] = @as(u128, low) | (@as(u128, high) << 64) | (@as(u128, 1) << (BLOCK_SIZE * 8));
         }
 
-        // Use SIMD for parallel multiplication
-        // Skip first element as it's handled separately
-        var values_to_multiply = values;
-        values_to_multiply[0] = 0; // Zero out first element for multiplication
-        
-        const products = multiplyModVector(values_to_multiply, self.r_powers);
-        
-        // Horner's method: acc = ((acc + v0) * r^VECTOR_WIDTH + sum(products[1..]))
+        // Horner's method: acc = (acc + v0) * r^VECTOR_WIDTH + v1 * r^(VECTOR_WIDTH-1) + ... + v(VECTOR_WIDTH-1) * r
+        // Handle v0 separately with accumulator
         self.acc +%= values[0];
         self.acc = multiplyMod(self.acc, self.r_powers[0]);
         
-        // Sum the products using vector reduction
-        var sum: u128 = 0;
-        inline for (1..VECTOR_WIDTH) |i| {
-            sum +%= products[i];
-        }
-        self.acc +%= sum;
+        // Zero out first value for SIMD multiplication since it's already handled
+        var values_to_multiply = values;
+        values_to_multiply[0] = 0;
+        
+        // Use SIMD for parallel multiplication of remaining values
+        const products = multiplyModVector(values_to_multiply, self.r_powers);
+        
+        // Sum products using SIMD reduction
+        self.acc +%= @reduce(.Add, products);
     }
 
     fn processBlock(self: *Poly1163, block: []const u8) void {
