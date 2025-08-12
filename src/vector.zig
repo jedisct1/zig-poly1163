@@ -19,11 +19,13 @@ pub const Poly1163 = struct {
         const r = mem.readInt(u128, key_bytes[0..16], .little) & (((@as(u128, 1) << 112) - 1));
         const s = mem.readInt(u128, key_bytes[16..32], .little);
 
-        // Precompute powers of r for Horner's method optimization
+        // Precompute powers of r in reverse order for Horner's method
+        // r_powers[0] = r^VECTOR_WIDTH, r_powers[1] = r^(VECTOR_WIDTH-1), ..., r_powers[VECTOR_WIDTH-1] = r
         var r_powers: @Vector(VECTOR_WIDTH, u128) = undefined;
-        r_powers[0] = r;
-        for (1..VECTOR_WIDTH) |i| {
-            r_powers[i] = multiplyMod(r_powers[i - 1], r);
+        r_powers[VECTOR_WIDTH - 1] = r;
+        var i: usize = VECTOR_WIDTH - 1;
+        while (i > 0) : (i -= 1) {
+            r_powers[i - 1] = multiplyMod(r_powers[i], r);
         }
 
         return Poly1163{
@@ -95,22 +97,16 @@ pub const Poly1163 = struct {
             values[i] = @as(u128, low) | (@as(u128, high) << 64) | (@as(u128, 1) << (BLOCK_SIZE * 8));
         }
 
-        // Create reversed r_powers for correct Horner's method pairing
-        var r_powers_reversed: @Vector(VECTOR_WIDTH, u128) = undefined;
-        inline for (0..VECTOR_WIDTH) |i| {
-            r_powers_reversed[i] = self.r_powers[VECTOR_WIDTH - 1 - i];
-        }
-        
-        // Use SIMD for parallel multiplication: values[1..] * r_powers_reversed[1..]
+        // Use SIMD for parallel multiplication
         // Skip first element as it's handled separately
         var values_to_multiply = values;
         values_to_multiply[0] = 0; // Zero out first element for multiplication
         
-        const products = multiplyModVector(values_to_multiply, r_powers_reversed);
+        const products = multiplyModVector(values_to_multiply, self.r_powers);
         
         // Horner's method: acc = ((acc + v0) * r^VECTOR_WIDTH + sum(products[1..]))
         self.acc +%= values[0];
-        self.acc = multiplyMod(self.acc, self.r_powers[VECTOR_WIDTH - 1]);
+        self.acc = multiplyMod(self.acc, self.r_powers[0]);
         
         // Sum the products using vector reduction
         var sum: u128 = 0;
