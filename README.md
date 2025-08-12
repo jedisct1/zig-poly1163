@@ -11,14 +11,14 @@ A high-performance polynomial-based message authentication code (MAC) implementa
 
 ## Algorithm Overview
 
-Poly1163 uses polynomial evaluation over a large prime field (2^130 - 1163) to compute authentication tags:
+Poly1163 uses polynomial evaluation over a large prime field (2^116 - 1163) to compute authentication tags:
 
 1. **Key derivation**: 256-bit key split into:
-   - `r`: 128-bit polynomial evaluation key (clamped for security)
-   - `s`: 128-bit final masking key
+   - `r`: 112-bit polynomial evaluation key (clamped for security)
+   - `s`: 128-bit final masking key (blind)
 
-2. **Message processing**: Messages are processed in 16-byte blocks, with each block:
-   - Converted to a 128-bit integer (little-endian)
+2. **Message processing**: Messages are processed in 14-byte blocks, with each block:
+   - Converted to a 112-bit integer (little-endian)
    - Added with a high bit set for domain separation
    - Accumulated using polynomial evaluation: `acc = (acc + block) * r mod p`
 
@@ -135,10 +135,25 @@ zig build test
 zig build run
 ```
 
+### Run benchmarks
+```bash
+zig build benchmark
+```
+
+### Run compatibility tests
+```bash
+zig build test-compat
+```
+
+### Run test vectors
+```bash
+zig build test-vectors
+```
+
 ## Implementation Details
 
-- **Prime modulus**: 2^130 - 1163 (chosen for efficient reduction)
-- **Block size**: 16 bytes (128 bits)
+- **Prime modulus**: 2^116 - 1163 (chosen for efficient reduction)
+- **Block size**: 14 bytes (112 bits)
 - **Key clamping**: Specific bits cleared in `r` to ensure uniform distribution and prevent weak keys
-- **Padding**: Each block includes a high bit to prevent extension attacks
-- **Arithmetic**: Uses Barrett reduction for efficient modular multiplication
+- **Padding**: Each block includes a high bit (bit 112) to prevent extension attacks
+- **Arithmetic**: Uses efficient modular reduction with SIMD vector operations for performance
