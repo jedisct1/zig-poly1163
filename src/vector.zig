@@ -23,8 +23,8 @@ pub const Poly1163 = struct {
         // r_powers[0] = r^VECTOR_WIDTH, r_powers[1] = r^(VECTOR_WIDTH-1), ..., r_powers[VECTOR_WIDTH-1] = r
         var r_powers: @Vector(VECTOR_WIDTH, u128) = undefined;
         r_powers[VECTOR_WIDTH - 1] = r;
-        var i: usize = VECTOR_WIDTH - 1;
-        while (i > 0) : (i -= 1) {
+        comptime var i: usize = VECTOR_WIDTH - 1;
+        inline while (i > 0) : (i -= 1) {
             r_powers[i - 1] = multiplyMod(r_powers[i], r);
         }
 

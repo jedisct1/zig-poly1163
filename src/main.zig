@@ -3,8 +3,7 @@ const poly1163 = @import("poly1163");
 const Poly1163 = poly1163.Poly1163;
 
 pub fn main() !void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-
+    var stdout = std.fs.File.stdout().writer(&[_]u8{}).interface;
     try stdout.print("=== Poly1163 Message Authentication Code Demo ===\n\n", .{});
 
     var key: [32]u8 = undefined;

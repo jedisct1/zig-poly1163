@@ -28,7 +28,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    var stdout = std.fs.File.stdout().writer(&[_]u8{}).interface;
 
     try stdout.print("\n=== Poly1163 vs Poly1305 Performance Comparison ===\n", .{});
     try stdout.print("Build mode: ReleaseFast\n", .{});

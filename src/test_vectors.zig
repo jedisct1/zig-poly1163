@@ -2,7 +2,7 @@ const std = @import("std");
 const root = @import("root.zig");
 
 pub fn main() !void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    var stdout = std.fs.File.stdout().writer(&[_]u8{}).interface;
 
     try stdout.print("=== Poly1163 Test Vectors ===\n\n", .{});
 
