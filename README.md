@@ -1,6 +1,6 @@
 # Poly1163
 
-A high-performance polynomial-based message authentication code (MAC) implementation in Zig, based on polynomial evaluation modulo prime 2^130 - 1163.
+A high-performance polynomial-based message authentication code (MAC) implementation in Zig, based on polynomial evaluation modulo prime 2^116 - 3.
 
 ## Features
 
@@ -11,7 +11,7 @@ A high-performance polynomial-based message authentication code (MAC) implementa
 
 ## Algorithm Overview
 
-Poly1163 uses polynomial evaluation over a large prime field (2^116 - 1163) to compute authentication tags:
+Poly1163 uses polynomial evaluation over a large prime field (2^116 - 3) to compute authentication tags:
 
 1. **Key derivation**: 256-bit key split into:
    - `r`: 112-bit polynomial evaluation key (clamped for security)
@@ -152,7 +152,7 @@ zig build test-vectors
 
 ## Implementation Details
 
-- **Prime modulus**: 2^116 - 1163 (chosen for efficient reduction)
+- **Prime modulus**: 2^116 - 3 (chosen for efficient reduction)
 - **Block size**: 14 bytes (112 bits)
 - **Key clamping**: Specific bits cleared in `r` to ensure uniform distribution and prevent weak keys
 - **Padding**: Each block includes a high bit (bit 112) to prevent extension attacks
