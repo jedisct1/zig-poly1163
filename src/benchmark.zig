@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const poly1163 = @import("root.zig");
 const Poly1305 = std.crypto.onetimeauth.Poly1305;
 
@@ -23,12 +24,13 @@ const configs = [_]BenchmarkConfig{
     .{ .name = "1 MB", .data_size = MB, .iterations = 25 },
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.gpa;
 
-    var stdout = std.fs.File.stdout().writer(&[_]u8{}).interface;
+    var stdout_buffer: [0x100]u8 = undefined;
+    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
 
     try stdout.print("\n=== Poly1163 vs Poly1305 Performance Comparison ===\n", .{});
     try stdout.print("Build mode: ReleaseFast\n", .{});

@@ -1,8 +1,12 @@
 const std = @import("std");
+const Io = std.Io;
 const root = @import("root.zig");
 
-pub fn main() !void {
-    var stdout = std.fs.File.stdout().writer(&[_]u8{}).interface;
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    var stdout_buffer: [0x100]u8 = undefined;
+    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
 
     try stdout.print("=== Poly1163 Test Vectors ===\n\n", .{});
 

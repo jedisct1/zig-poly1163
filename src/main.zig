@@ -1,13 +1,17 @@
 const std = @import("std");
+const Io = std.Io;
 const poly1163 = @import("poly1163");
 const Poly1163 = poly1163.Poly1163;
 
-pub fn main() !void {
-    var stdout = std.fs.File.stdout().writer(&[_]u8{}).interface;
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    var stdout_buffer: [0x100]u8 = undefined;
+    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
     try stdout.print("=== Poly1163 Message Authentication Code Demo ===\n\n", .{});
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    io.random(&key);
 
     try stdout.print("Generated random 256-bit key\n", .{});
     try stdout.print("Key (hex): ", .{});
@@ -75,15 +79,14 @@ pub fn main() !void {
         const iterations = 10000;
         const test_message = "Performance test message with some data to process";
 
-        const start = std.time.nanoTimestamp();
+        var timer = try std.time.Timer.start();
 
         var i: usize = 0;
         while (i < iterations) : (i += 1) {
             _ = poly1163.authenticate(key, test_message);
         }
 
-        const end = std.time.nanoTimestamp();
-        const elapsed_ns = @as(u64, @intCast(end - start));
+        const elapsed_ns = timer.read();
         const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
         const ops_per_sec = @as(f64, @floatFromInt(iterations)) / (elapsed_ms / 1000.0);
 

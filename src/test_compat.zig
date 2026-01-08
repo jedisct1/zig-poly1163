@@ -1,8 +1,12 @@
 const std = @import("std");
+const Io = std.Io;
 const root = @import("root.zig");
 
-pub fn main() !void {
-    var stdout = std.fs.File.stdout().writer(&[_]u8{}).interface;
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    var stdout_buffer: [0x100]u8 = undefined;
+    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
 
     // Use the same test key as the C example
     const key = [_]u8{ 0x3A, 0x7F, 0xC2, 0x1D, 0x55, 0x9B, 0xE0, 0x4C, 0x8A, 0x2E, 0x73, 0x6D, 0xF1, 0x90, 0x12, 0x38, 0xA4, 0xB6, 0x05, 0xE9, 0xD7, 0x30, 0x19, 0xCB, 0x84, 0xFE, 0x6A, 0x41, 0x97, 0x20, 0xDA, 0x11 };
