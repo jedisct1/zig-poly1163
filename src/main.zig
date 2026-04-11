@@ -79,14 +79,14 @@ pub fn main(init: std.process.Init) !void {
         const iterations = 10000;
         const test_message = "Performance test message with some data to process";
 
-        var timer = try std.time.Timer.start();
+        const bench_start = Io.Clock.Timestamp.now(io, .awake);
 
         var i: usize = 0;
         while (i < iterations) : (i += 1) {
             _ = poly1163.authenticate(key, test_message);
         }
 
-        const elapsed_ns = timer.read();
+        const elapsed_ns: u64 = @intCast(bench_start.untilNow(io).raw.nanoseconds);
         const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
         const ops_per_sec = @as(f64, @floatFromInt(iterations)) / (elapsed_ms / 1000.0);
 

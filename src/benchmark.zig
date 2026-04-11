@@ -61,8 +61,8 @@ pub fn main(init: std.process.Init) !void {
         defer allocator.free(data);
         random.bytes(data);
 
-        const poly1163_ns = try benchmarkPoly1163(key_1163, data, config.iterations);
-        const poly1305_ns = try benchmarkPoly1305(key_1305, data, config.iterations);
+        const poly1163_ns = benchmarkPoly1163(io, key_1163, data, config.iterations);
+        const poly1305_ns = benchmarkPoly1305(io, key_1305, data, config.iterations);
 
         const vs_1305 = @as(f64, @floatFromInt(poly1305_ns)) / @as(f64, @floatFromInt(poly1163_ns));
 
@@ -79,8 +79,8 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("- Efficient 58-bit limb arithmetic\n", .{});
 }
 
-fn benchmarkPoly1163(key: [32]u8, data: []const u8, iterations: u32) !u64 {
-    var timer = try std.time.Timer.start();
+fn benchmarkPoly1163(io: Io, key: [32]u8, data: []const u8, iterations: u32) u64 {
+    const start = Io.Clock.Timestamp.now(io, .awake);
 
     var i: u32 = 0;
     while (i < iterations) : (i += 1) {
@@ -90,12 +90,12 @@ fn benchmarkPoly1163(key: [32]u8, data: []const u8, iterations: u32) !u64 {
         std.mem.doNotOptimizeAway(&tag);
     }
 
-    const elapsed = timer.read();
+    const elapsed: u64 = @intCast(start.untilNow(io).raw.nanoseconds);
     return elapsed / iterations;
 }
 
-fn benchmarkPoly1305(key: [32]u8, data: []const u8, iterations: u32) !u64 {
-    var timer = try std.time.Timer.start();
+fn benchmarkPoly1305(io: Io, key: [32]u8, data: []const u8, iterations: u32) u64 {
+    const start = Io.Clock.Timestamp.now(io, .awake);
 
     var i: u32 = 0;
     while (i < iterations) : (i += 1) {
@@ -104,7 +104,7 @@ fn benchmarkPoly1305(key: [32]u8, data: []const u8, iterations: u32) !u64 {
         std.mem.doNotOptimizeAway(&tag);
     }
 
-    const elapsed = timer.read();
+    const elapsed: u64 = @intCast(start.untilNow(io).raw.nanoseconds);
     return elapsed / iterations;
 }
 
