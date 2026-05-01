@@ -63,18 +63,25 @@ pub const Poly1163 = struct {
             }
         }
 
-        // Prefetch upcoming data for better cache utilization
-        @prefetch(input.ptr + 256, .{ .rw = .read, .locality = 3, .cache = .data });
+        if (comptime VECTOR_WIDTH == 1) {
+            while (input.len >= BLOCK_SIZE) {
+                self.processFullBlock(input[0..BLOCK_SIZE]);
+                input = input[BLOCK_SIZE..];
+            }
+        } else {
+            // Prefetch upcoming data for better cache utilization on wider batches.
+            @prefetch(input.ptr + 256, .{ .rw = .read, .locality = 3, .cache = .data });
 
-        while (input.len >= BLOCK_SIZE * VECTOR_WIDTH) {
-            @prefetch(input.ptr + BLOCK_SIZE * VECTOR_WIDTH + 256, .{ .rw = .read, .locality = 3, .cache = .data });
-            self.processVectorBlocks(input[0 .. BLOCK_SIZE * VECTOR_WIDTH]);
-            input = input[BLOCK_SIZE * VECTOR_WIDTH ..];
-        }
+            while (input.len >= BLOCK_SIZE * VECTOR_WIDTH) {
+                @prefetch(input.ptr + BLOCK_SIZE * VECTOR_WIDTH + 256, .{ .rw = .read, .locality = 3, .cache = .data });
+                self.processVectorBlocks(input[0 .. BLOCK_SIZE * VECTOR_WIDTH]);
+                input = input[BLOCK_SIZE * VECTOR_WIDTH ..];
+            }
 
-        while (input.len >= BLOCK_SIZE) {
-            self.processBlock(input[0..BLOCK_SIZE]);
-            input = input[BLOCK_SIZE..];
+            while (input.len >= BLOCK_SIZE) {
+                self.processBlock(input[0..BLOCK_SIZE]);
+                input = input[BLOCK_SIZE..];
+            }
         }
 
         if (input.len > 0) {
@@ -84,17 +91,16 @@ pub const Poly1163 = struct {
     }
 
     fn processVectorBlocks(self: *Poly1163, blocks: []const u8) void {
+        if (comptime VECTOR_WIDTH == 1) {
+            self.processFullBlock(blocks[0..BLOCK_SIZE]);
+            return;
+        }
+
         var values: @Vector(VECTOR_WIDTH, u128) = undefined;
 
         // Load VECTOR_WIDTH blocks in parallel
         inline for (0..VECTOR_WIDTH) |i| {
-            const block = blocks[i * BLOCK_SIZE .. (i + 1) * BLOCK_SIZE];
-            const low = mem.readInt(u64, block[0..8], .little);
-            var high: u64 = 0;
-            inline for (0..6) |j| {
-                high |= @as(u64, block[8 + j]) << @intCast(j * 8);
-            }
-            values[i] = @as(u128, low) | (@as(u128, high) << 64) | (@as(u128, 1) << (BLOCK_SIZE * 8));
+            values[i] = loadFullBlock(blocks[i * BLOCK_SIZE .. (i + 1) * BLOCK_SIZE]);
         }
 
         // Horner's method: acc = (acc + v0) * r^VECTOR_WIDTH + v1 * r^(VECTOR_WIDTH-1) + ... + v(VECTOR_WIDTH-1) * r
@@ -112,7 +118,29 @@ pub const Poly1163 = struct {
         self.acc +%= @reduce(.Add, products);
     }
 
+    fn processFullBlock(self: *Poly1163, block: *const [BLOCK_SIZE]u8) void {
+        self.acc +%= loadFullBlock(block);
+        self.acc = multiplyMod(self.acc, self.r);
+    }
+
+    fn loadFullBlock(block: *const [BLOCK_SIZE]u8) u128 {
+        const low = mem.readInt(u64, block[0..8], .little);
+        const high = @as(u64, block[8]) |
+            (@as(u64, block[9]) << 8) |
+            (@as(u64, block[10]) << 16) |
+            (@as(u64, block[11]) << 24) |
+            (@as(u64, block[12]) << 32) |
+            (@as(u64, block[13]) << 40);
+
+        return @as(u128, low) | (@as(u128, high) << 64) | (@as(u128, 1) << (BLOCK_SIZE * 8));
+    }
+
     fn processBlock(self: *Poly1163, block: []const u8) void {
+        if (block.len == BLOCK_SIZE) {
+            self.processFullBlock(block[0..BLOCK_SIZE]);
+            return;
+        }
+
         const len = @min(block.len, BLOCK_SIZE);
         var val: u128 = 0;
 
