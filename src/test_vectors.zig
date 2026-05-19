@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Test 1: Empty message
     {
-        const key = [_]u8{0} ** 32;
+        const key: [32]u8 = @splat(0);
         const data = "";
 
         var poly = root.Poly1163.init(key);
@@ -31,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Test 2: Single block
     {
-        const key = [_]u8{1} ** 32;
+        const key: [32]u8 = @splat(1);
         const data = "Hello World!";
 
         var poly = root.Poly1163.init(key);
@@ -50,7 +50,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Test 3: Multiple blocks
     {
-        const key = [_]u8{0xFF} ** 32;
+        const key: [32]u8 = @splat(0xFF);
         const data = "The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog.";
 
         var poly = root.Poly1163.init(key);
@@ -69,7 +69,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Test 4: Incremental update
     {
-        const key = [_]u8{0x42} ** 32;
+        const key: [32]u8 = @splat(0x42);
         const part1 = "Hello ";
         const part2 = "World";
         const part3 = "!";
@@ -104,7 +104,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Test 5: Exactly 56 bytes (4 blocks of 14 bytes)
     {
-        const key = [_]u8{0xAA} ** 32;
+        const key: [32]u8 = @splat(0xAA);
         const data = "1234567890123456789012345678901234567890123456789012345"; // 56 bytes
 
         var poly = root.Poly1163.init(key);

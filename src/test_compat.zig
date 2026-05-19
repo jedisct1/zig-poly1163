@@ -44,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
     var poly2 = root.Poly1163.init(key);
 
     // Create a 1024 byte buffer with "Hello World!" at the start and zeros after
-    var buf: [1024]u8 = [_]u8{0} ** 1024;
+    var buf: [1024]u8 = @splat(0);
     @memcpy(buf[0..data.len], data);
 
     poly2.update(&buf);

@@ -32,19 +32,19 @@ test "reference compatibility tests" {
     try expectTag(key1, "", "a4b605e9d73019cb84fe6a419720da11");
     try expectTag(key1, &[_]u8{0x42}, "b9bda957e7919c7d79884bec4270e011");
 
-    const data4 = [_]u8{0xAA} ** 14;
+    const data4: [14]u8 = @splat(0xAA);
     try expectTag(key1, &data4, "ea7e7b6ed4f9decfb388a76aec97da11");
 
-    const data5 = [_]u8{0xBB} ** 15;
+    const data5: [15]u8 = @splat(0xBB);
     try expectTag(key1, &data5, "aaedd02acf33a866dfca83012468db11");
 
-    const data6 = [_]u8{0xCC} ** 28;
+    const data6: [28]u8 = @splat(0xCC);
     try expectTag(key1, &data6, "1503cea2b6673406135a97f2842ae711");
 
-    const data7 = [_]u8{0xDD} ** 56;
+    const data7: [56]u8 = @splat(0xDD);
     try expectTag(key1, &data7, "e162ac436bd9efd55620212d8f51e611");
 
-    const data8 = [_]u8{0xEE} ** 57;
+    const data8: [57]u8 = @splat(0xEE);
     try expectTag(key1, &data8, "39e980628d1ad4c23a359ff810dce911");
 
     var data9: [100]u8 = undefined;
@@ -53,10 +53,10 @@ test "reference compatibility tests" {
     }
     try expectTag(key1, &data9, "ef62449a7573c1e9fb367552d875da11");
 
-    const key2 = [_]u8{0} ** 32;
+    const key2: [32]u8 = @splat(0);
     try expectTag(key2, "Hello World!", "00000000000000000000000000000000");
 
-    const key3 = [_]u8{0x42} ** 32;
+    const key3: [32]u8 = @splat(0x42);
     try expectTag(key3, "Hello World!", "6a22576dc4ef8f229bd27b1a57574742");
 
     var data12: [1024]u8 = undefined;

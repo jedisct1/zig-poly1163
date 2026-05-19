@@ -1,9 +1,21 @@
 const std = @import("std");
 const testing = std.testing;
 
+fn repeatStr(comptime s: []const u8, comptime n: usize) [s.len * n]u8 {
+    var out: [s.len * n]u8 = undefined;
+    for (0..n) |i| {
+        @memcpy(out[i * s.len ..][0..s.len], s);
+    }
+    return out;
+}
+
 // Test that different VECTOR_WIDTH values produce the same result
 test "vector width consistency" {
     const key = [_]u8{ 0x3A, 0x7F, 0xC2, 0x1D, 0x55, 0x9B, 0xE0, 0x4C, 0x8A, 0x2E, 0x73, 0x6D, 0xF1, 0x90, 0x12, 0x38, 0xA4, 0xB6, 0x05, 0xE9, 0xD7, 0x30, 0x19, 0xCB, 0x84, 0xFE, 0x6A, 0x41, 0x97, 0x20, 0xDA, 0x11 };
+
+    const rep_a100 = repeatStr("a", 100);
+    const rep_test50 = repeatStr("test", 50);
+    const rep_dec20 = repeatStr("0123456789", 20);
 
     // Test with different message sizes
     const test_cases = [_][]const u8{
@@ -11,9 +23,9 @@ test "vector width consistency" {
         "a",
         "Hello",
         "The quick brown fox jumps over the lazy dog",
-        "a" ** 100,
-        "test" ** 50,
-        "0123456789" ** 20,
+        &rep_a100,
+        &rep_test50,
+        &rep_dec20,
     };
 
     // Expected tag for "The quick brown fox..." message
